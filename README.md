@@ -60,6 +60,30 @@ This project is built with:
 - shadcn-ui
 - Tailwind CSS
 
+## Running with Docker
+
+```sh
+# Build images
+docker compose build
+
+# Start all services (frontend + API)
+docker compose up -d
+
+# Or build and start in one command
+docker compose up -d --build
+
+# Frontend will be available at http://localhost:7899
+# API will be available at http://localhost:3001
+
+# View logs
+docker compose logs -f
+
+# Stop all services
+docker compose down
+```
+
+Data is persisted in the `meetscribe_data` Docker volume.
+
 ## How can I deploy this project?
 
 Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
