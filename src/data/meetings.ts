@@ -1,5 +1,32 @@
 import { TranscriptSegment } from "@/components/MeetingPlayer";
 
+export const MEETING_CATEGORIES = [
+  "Engineering",
+  "Design",
+  "Product",
+  "Client Sync",
+  "1:1",
+  "Standup",
+  "All Hands",
+  "Interview",
+  "Workshop",
+  "Other",
+] as const;
+
+export type MeetingCategory = (typeof MEETING_CATEGORIES)[number];
+
+export interface ActionItem {
+  id: string;
+  assignee: string;
+  text: string;
+  done: boolean;
+}
+
+export interface TagRule {
+  name: string;
+  keywords: string[];
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -11,6 +38,14 @@ export interface Meeting {
   mediaSrc?: string;
   calendarEventUrl?: string;
   calendarEventId?: string;
+  category?: MeetingCategory;
+  tags?: string[];
+  meetingType?: string;
+  autoCategories?: string[];
+  summary?: string;
+  actionItems?: ActionItem[];
+  tokensSpent?: number;
+  estimatedCost?: number;
   segments: TranscriptSegment[];
 }
 
@@ -23,8 +58,18 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Upload",
     mediaType: "video",
+    category: "Engineering",
+    tags: ["sprint", "planning", "q1"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=abc123",
     calendarEventId: "abc123",
+    summary: "The team aligned on the primary backlog items for the upcoming sprint. Dev completed the OAuth integration and is moving it to review. Sarah will tackle API rate limiting over two days. The team agreed to use webhook mode for the Telegram bot and decided on a self-hosted Docker network approach for the Scriberr transcription service to maintain data privacy.",
+    actionItems: [
+      { id: "a1", assignee: "Dev Patel", text: "Merge the completed OAuth and refresh token logic by end of day", done: false },
+      { id: "a2", assignee: "Sarah Kim", text: "Implement and test API rate limiting (est. 2 days)", done: false },
+      { id: "a3", assignee: "Dev Patel", text: "Prepare a draft of the Telegram message schema tonight", done: false },
+      { id: "a4", assignee: "Sarah Kim", text: "Sync with Dev at 10 AM tomorrow to pair program the Telegram bot integration", done: false },
+      { id: "a5", assignee: "Sarah Kim", text: "Write up the Docker compose configuration for self-hosted transcription", done: false },
+    ],
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 8, text: "Alright everyone, let's get started with today's sprint planning. We have quite a few items to go through this time." },
       { speaker: "Sarah Kim", startTime: 8, endTime: 15, text: "Sure. I've updated the backlog with the new priorities from yesterday's stakeholder meeting. There are three critical items." },
@@ -50,8 +95,15 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Telegram",
     mediaType: "audio",
+    category: "Design",
+    tags: ["dashboard", "ui", "dark-theme"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=def456",
     calendarEventId: "def456",
+    summary: "Maria presented the new dashboard designs with the dark theme using emerald accents. James approved the direction. Discussion moved to ensuring the transcript player component supports both audio and video playback.",
+    actionItems: [
+      { id: "a6", assignee: "Maria Lopez", text: "Finalize the video variant of the transcript player in Figma", done: false },
+      { id: "a7", assignee: "James Wu", text: "Review dark theme contrast ratios for accessibility", done: false },
+    ],
     segments: [
       { speaker: "Maria Lopez", startTime: 0, endTime: 10, text: "Let's review the new dashboard designs. I've shared the Figma link in the chat." },
       { speaker: "James Wu", startTime: 10, endTime: 20, text: "The dark theme looks excellent. I really like the emerald accent color choice." },
@@ -66,6 +118,8 @@ export const sampleMeetings: Meeting[] = [
     status: "pending",
     source: "Upload",
     mediaType: "video",
+    category: "Client Sync",
+    tags: ["acme", "client"],
     segments: [],
   },
   {
@@ -76,8 +130,11 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Telegram",
     mediaType: "audio",
+    category: "Standup",
+    tags: ["daily", "standup"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=ghi789",
     calendarEventId: "ghi789",
+    summary: "Quick daily standup. Dev finished the file upload component and started the queue worker. Sarah fixed the calendar integration bug and deployed a hotfix.",
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 8, text: "Quick standup. What did everyone work on yesterday?" },
       { speaker: "Dev Patel", startTime: 8, endTime: 18, text: "I wrapped up the file upload component and started on the queue worker." },
@@ -92,6 +149,8 @@ export const sampleMeetings: Meeting[] = [
     status: "error",
     source: "Upload",
     mediaType: "video",
+    category: "Product",
+    tags: ["roadmap", "strategy"],
     segments: [],
   },
   {
@@ -102,6 +161,13 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Upload",
     mediaType: "audio",
+    category: "Engineering",
+    tags: ["docker", "infrastructure"],
+    summary: "The team discussed finalizing the Docker setup for the transcription pipeline. Dev drafted the docker-compose file including Scriberr, the file watcher, and the Telegram bot.",
+    actionItems: [
+      { id: "a8", assignee: "Dev Patel", text: "Finalize and test the docker-compose configuration", done: false },
+      { id: "a9", assignee: "Alex Chen", text: "Review and approve the infrastructure setup by end of week", done: false },
+    ],
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 12, text: "We need to finalize the Docker setup for the transcription pipeline this week." },
       { speaker: "Dev Patel", startTime: 12, endTime: 24, text: "I've drafted the docker-compose file. It includes Scriberr, the file watcher, and the Telegram bot." },
@@ -115,6 +181,8 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Telegram",
     mediaType: "audio",
+    category: "1:1",
+    tags: ["growth", "career"],
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 15, text: "Let's talk about your growth goals for this quarter and how the project is going." },
       { speaker: "Dev Patel", startTime: 15, endTime: 30, text: "I'd like to focus more on system design. The meeting transcription project is a great opportunity for that." },
@@ -128,6 +196,8 @@ export const sampleMeetings: Meeting[] = [
     status: "completed",
     source: "Upload",
     mediaType: "video",
+    category: "All Hands",
+    tags: ["company", "quarterly", "growth"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=jkl012",
     calendarEventId: "jkl012",
     segments: [

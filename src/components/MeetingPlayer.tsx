@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import {
   Play,
@@ -12,9 +12,11 @@ import {
   Check,
   Video,
   Music,
+  ChevronsDown,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
+import { SpeakerTimeline } from "@/components/SpeakerTimeline";
 
 export interface TranscriptSegment {
   speaker: string;
@@ -30,6 +32,24 @@ interface MeetingPlayerProps {
   mediaType?: "audio" | "video";
   segments: TranscriptSegment[];
   onSpeakerRename?: (oldName: string, newName: string) => void;
+  searchQuery?: string;
+}
+
+function HighlightedText({ text, query }: { text: string; query?: string }) {
+  if (!query || !query.trim()) return <>{text}</>;
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  const parts = text.split(regex);
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="bg-warning/30 text-foreground rounded-sm px-0.5">{part}</mark>
+        ) : (
+          <span key={i}>{part}</span>
+        )
+      )}
+    </>
+  );
 }
 
 function getSpeakerColorIndex(speaker: string, allSpeakers: string[]): number {
@@ -53,7 +73,7 @@ function formatTime(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename }: MeetingPlayerProps) {
+export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename, searchQuery }: MeetingPlayerProps) {
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const activeSegmentRef = useRef<HTMLDivElement>(null);
@@ -66,6 +86,15 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
+  // Scrubbing state — prevents slider thumb fighting
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubTime, setScrubTime] = useState(0);
+
+  // Auto-scroll state
+  const [autoScroll, setAutoScroll] = useState(true);
+  const userScrolledRef = useRef(false);
+  const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Unique speakers for consistent coloring
   const allSpeakers = Array.from(new Set(segments.map((s) => s.speaker)));
 
@@ -76,7 +105,9 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     if (idx !== activeIndex) setActiveIndex(idx);
   }, [currentTime, segments, activeIndex]);
 
+  // Auto-scroll to active segment (only if autoScroll is enabled)
   useEffect(() => {
+    if (!autoScroll) return;
     if (activeSegmentRef.current && transcriptRef.current) {
       const container = transcriptRef.current;
       const el = activeSegmentRef.current;
@@ -86,15 +117,32 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
         el.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
-  }, [activeIndex]);
+  }, [activeIndex, autoScroll]);
+
+  // Detect manual scroll to disable auto-scroll
+  const handleTranscriptScroll = useCallback(() => {
+    if (!autoScroll) return;
+    // Debounce — only disable if user is actively scrolling (not programmatic)
+    userScrolledRef.current = true;
+    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      if (userScrolledRef.current) {
+        setAutoScroll(false);
+        userScrolledRef.current = false;
+      }
+    }, 150);
+  }, [autoScroll]);
 
   const handleTimeUpdate = useCallback(() => {
-    if (mediaRef.current) setCurrentTime(mediaRef.current.currentTime);
-  }, []);
+    if (mediaRef.current && !isScrubbing) setCurrentTime(mediaRef.current.currentTime);
+  }, [isScrubbing]);
 
   const handleLoadedMetadata = useCallback(() => {
     if (mediaRef.current) setDuration(mediaRef.current.duration);
   }, []);
+
+  const handlePlay = useCallback(() => setIsPlaying(true), []);
+  const handlePause = useCallback(() => setIsPlaying(false), []);
 
   const togglePlay = () => {
     if (!mediaRef.current) {
@@ -103,30 +151,45 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     }
     if (isPlaying) mediaRef.current.pause();
     else mediaRef.current.play();
-    setIsPlaying(!isPlaying);
   };
 
-  // Demo playback
+  // Demo playback — use wall-clock time to prevent drift
+  const demoDuration = segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 60;
   useEffect(() => {
-    if (!mediaSrc && isPlaying) {
-      const totalDuration = segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 60;
-      if (duration === 0) setDuration(totalDuration);
+    if (!mediaSrc && isPlaying && !isScrubbing) {
+      if (duration === 0) setDuration(demoDuration);
+      const startWall = Date.now();
+      const startOffset = currentTime;
       const interval = setInterval(() => {
-        setCurrentTime((t) => {
-          if (t >= totalDuration) { setIsPlaying(false); return 0; }
-          return t + 0.25;
-        });
+        const elapsed = (Date.now() - startWall) / 1000;
+        const newTime = startOffset + elapsed;
+        if (newTime >= demoDuration) {
+          setIsPlaying(false);
+          setCurrentTime(0);
+        } else {
+          setCurrentTime(newTime);
+        }
       }, 250);
       return () => clearInterval(interval);
     }
-  }, [mediaSrc, isPlaying, segments, duration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaSrc, isPlaying, segments, isScrubbing]);
 
   const seekTo = (time: number) => {
     setCurrentTime(time);
     if (mediaRef.current) mediaRef.current.currentTime = time;
   };
 
-  const handleSeek = (val: number[]) => seekTo(val[0]);
+  // Scrubbing handlers
+  const handleSeekChange = (val: number[]) => {
+    setIsScrubbing(true);
+    setScrubTime(val[0]);
+  };
+
+  const handleSeekCommit = (val: number[]) => {
+    setIsScrubbing(false);
+    seekTo(val[0]);
+  };
 
   const handleVolume = (val: number[]) => {
     setVolume(val[0]);
@@ -150,23 +213,27 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   };
 
   const totalDuration = duration || (segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 0);
+  const displayTime = isScrubbing ? scrubTime : currentTime;
 
-  // Group consecutive segments by speaker
-  const groupedSegments: { speaker: string; segments: (TranscriptSegment & { index: number })[] }[] = [];
-  segments.forEach((seg, i) => {
-    const last = groupedSegments[groupedSegments.length - 1];
-    if (last && last.speaker === seg.speaker) {
-      last.segments.push({ ...seg, index: i });
-    } else {
-      groupedSegments.push({ speaker: seg.speaker, segments: [{ ...seg, index: i }] });
-    }
-  });
+  // Memoize grouped segments to avoid re-rendering on every currentTime tick
+  const groupedSegments = useMemo(() => {
+    const groups: { speaker: string; segments: (TranscriptSegment & { index: number })[] }[] = [];
+    segments.forEach((seg, i) => {
+      const last = groups[groups.length - 1];
+      if (last && last.speaker === seg.speaker) {
+        last.segments.push({ ...seg, index: i });
+      } else {
+        groups.push({ speaker: seg.speaker, segments: [{ ...seg, index: i }] });
+      }
+    });
+    return groups;
+  }, [segments]);
 
   const isVideo = mediaType === "video";
 
   return (
     <div className="flex flex-col rounded-lg border border-border bg-card overflow-hidden">
-      {/* Video area — always shown for video type, with placeholder when no src */}
+      {/* Video area */}
       {isVideo && (
         <div className="relative aspect-video bg-background flex items-center justify-center">
           {mediaSrc ? (
@@ -176,6 +243,8 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
               className="h-full w-full"
               onTimeUpdate={handleTimeUpdate}
               onLoadedMetadata={handleLoadedMetadata}
+              onPlay={handlePlay}
+              onPause={handlePause}
             />
           ) : (
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
@@ -193,6 +262,8 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           src={mediaSrc}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
+          onPlay={handlePlay}
+          onPause={handlePause}
         />
       )}
 
@@ -219,17 +290,26 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
               {isVideo ? "Video" : "Audio"}
             </span>
             <span className="text-xs text-muted-foreground font-mono">
-              {formatTime(currentTime)} / {formatTime(totalDuration)}
+              {formatTime(displayTime)} / {formatTime(totalDuration)}
             </span>
           </div>
         </div>
 
         <Slider
-          value={[currentTime]}
+          value={[displayTime]}
           max={totalDuration || 100}
           step={0.5}
-          onValueChange={handleSeek}
+          onValueChange={handleSeekChange}
+          onValueCommit={handleSeekCommit}
           className="cursor-pointer"
+        />
+
+        {/* Speaker Timeline */}
+        <SpeakerTimeline
+          segments={segments}
+          totalDuration={totalDuration}
+          currentTime={displayTime}
+          onSeek={seekTo}
         />
 
         <div className="flex items-center justify-between">
@@ -246,7 +326,11 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           </div>
 
           <div className="flex items-center gap-2">
-            <button onClick={() => setIsMuted(!isMuted)} className="text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => {
+              const next = !isMuted;
+              setIsMuted(next);
+              if (mediaRef.current) mediaRef.current.muted = next;
+            }} className="text-muted-foreground hover:text-foreground transition-colors">
               {isMuted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </button>
             <div className="w-20">
@@ -260,12 +344,12 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
       {allSpeakers.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-2.5 bg-secondary/10">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground mr-1">Speakers:</span>
-          {allSpeakers.map((speaker) => {
+          {allSpeakers.map((speaker, idx) => {
             const ci = getSpeakerColorIndex(speaker, allSpeakers);
             const colors = colorClasses[ci];
             const isEditing = editingSpeaker === speaker;
             return (
-              <div key={speaker} className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1", colors.bg)}>
+              <div key={`speaker-${idx}`} className={cn("flex items-center gap-1.5 rounded-full px-2.5 py-1", colors.bg)}>
                 <User className={cn("h-3 w-3", colors.text)} />
                 {isEditing ? (
                   <form onSubmit={(e) => { e.preventDefault(); confirmRename(); }} className="flex items-center gap-1">
@@ -295,59 +379,75 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
       )}
 
       {/* Transcript */}
-      <div ref={transcriptRef} className="max-h-[420px] overflow-y-auto scroll-smooth">
-        {segments.length === 0 && (
-          <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-            No transcript available yet
-          </div>
+      <div className="relative">
+        {/* Auto-scroll resume button */}
+        {!autoScroll && isPlaying && (
+          <button
+            onClick={() => setAutoScroll(true)}
+            className="absolute top-2 right-4 z-10 flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-[10px] font-medium text-primary-foreground shadow-md hover:bg-primary/90 transition-colors"
+          >
+            <ChevronsDown className="h-3 w-3" />
+            Resume auto-scroll
+          </button>
         )}
-        {groupedSegments.map((group, gi) => (
-          <div key={gi} className="border-b border-border last:border-0">
-            {group.segments.map((seg) => {
-              const isActive = seg.index === activeIndex;
-              const ci = getSpeakerColorIndex(seg.speaker, allSpeakers);
-              const colors = colorClasses[ci];
-              return (
-                <div
-                  key={seg.index}
-                  ref={isActive ? activeSegmentRef : undefined}
-                  onClick={() => seekTo(seg.startTime)}
-                  className={cn(
-                    "flex gap-4 px-5 py-2.5 cursor-pointer transition-all duration-200",
-                    isActive
-                      ? "bg-primary/5 border-l-2 border-l-primary"
-                      : "border-l-2 border-l-transparent hover:bg-secondary/30"
-                  )}
-                >
-                  <div className="flex w-28 shrink-0 items-start gap-2 pt-0.5">
-                    {seg.index === group.segments[0].index ? (
-                      <>
-                        <div className={cn("flex h-5 w-5 items-center justify-center rounded-full", colors.bg)}>
-                          <User className={cn("h-3 w-3", colors.text)} />
-                        </div>
-                        <span className={cn("text-xs font-medium truncate", colors.text)}>
-                          {seg.speaker}
-                        </span>
-                      </>
-                    ) : (
-                      <div className="w-full" />
+        <div
+          ref={transcriptRef}
+          onScroll={isPlaying ? handleTranscriptScroll : undefined}
+          className="max-h-[420px] overflow-y-auto scroll-smooth"
+        >
+          {segments.length === 0 && (
+            <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+              No transcript available yet
+            </div>
+          )}
+          {groupedSegments.map((group, gi) => (
+            <div key={gi} className="border-b border-border last:border-0">
+              {group.segments.map((seg) => {
+                const isActive = seg.index === activeIndex;
+                const ci = getSpeakerColorIndex(seg.speaker, allSpeakers);
+                const colors = colorClasses[ci];
+                return (
+                  <div
+                    key={seg.index}
+                    ref={isActive ? activeSegmentRef : undefined}
+                    onClick={() => seekTo(seg.startTime)}
+                    className={cn(
+                      "flex gap-4 px-5 py-2.5 cursor-pointer transition-all duration-200",
+                      isActive
+                        ? "bg-primary/5 border-l-2 border-l-primary"
+                        : "border-l-2 border-l-transparent hover:bg-secondary/30"
                     )}
+                  >
+                    <div className="flex w-28 shrink-0 items-start gap-2 pt-0.5">
+                      {seg.index === group.segments[0].index ? (
+                        <>
+                          <div className={cn("flex h-5 w-5 items-center justify-center rounded-full", colors.bg)}>
+                            <User className={cn("h-3 w-3", colors.text)} />
+                          </div>
+                          <span className={cn("text-xs font-medium truncate", colors.text)}>
+                            {seg.speaker}
+                          </span>
+                        </>
+                      ) : (
+                        <div className="w-full" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={cn("text-sm leading-relaxed transition-colors duration-200", isActive ? "text-foreground" : "text-muted-foreground")}>
+                        <HighlightedText text={seg.text} query={searchQuery} />
+                      </p>
+                    </div>
+                    <div className="flex w-14 shrink-0 items-start justify-end pt-0.5">
+                      <span className={cn("text-[10px] font-mono transition-colors", isActive ? "text-primary" : "text-muted-foreground/60")}>
+                        {formatTime(seg.startTime)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={cn("text-sm leading-relaxed transition-colors duration-200", isActive ? "text-foreground" : "text-muted-foreground")}>
-                      {seg.text}
-                    </p>
-                  </div>
-                  <div className="flex w-14 shrink-0 items-start justify-end pt-0.5">
-                    <span className={cn("text-[10px] font-mono transition-colors", isActive ? "text-primary" : "text-muted-foreground/60")}>
-                      {formatTime(seg.startTime)}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ))}
+                );
+              })}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,6 @@
+services:
+  meetscribe:
+    build: .
+    ports:
+      - "7899:7899"
+    restart: unless-stopped

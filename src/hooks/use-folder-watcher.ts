@@ -22,6 +22,15 @@ export function useFolderWatcher() {
   );
   const dirHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mountedRef = useRef(true);
+
+  // Track mounted state to prevent state updates after unmount
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const scanFolder = useCallback(async () => {
     const dirHandle = dirHandleRef.current;
@@ -32,41 +41,61 @@ export function useFolderWatcher() {
       const dirAny = dirHandle as any;
       const perm = await dirAny.queryPermission({ mode: "read" });
       if (perm !== "granted") {
-        const req = await dirAny.requestPermission({ mode: "read" });
-        if (req !== "granted") {
-          setWatching(false);
-          return;
-        }
+        console.warn("Folder permission lost; stopping watcher.");
+        if (mountedRef.current) setWatching(false);
+        return;
       }
 
       const newFiles: DetectedFile[] = [];
+      const diskFileNames = new Set<string>();
+
       for await (const entry of dirHandle.values()) {
+        if (!mountedRef.current) return; // Abort if unmounted
         if (entry.kind !== "file") continue;
+        diskFileNames.add(entry.name);
         if (!MEDIA_EXTENSIONS.test(entry.name)) continue;
 
-        const file = await entry.getFile();
-        // Skip files being written (modified in last 3 seconds)
-        const age = Date.now() - file.lastModified;
-        if (age < 3000) continue;
+        // Skip getFile() for files already known — avoids O(N) disk I/O
+        const knownByName = Array.from(knownFiles).some((k) => k.startsWith(entry.name + "|"));
+        if (knownByName) continue;
 
-        const key = `${entry.name}|${file.size}`;
-        if (!knownFiles.has(key)) {
-          newFiles.push({
-            name: entry.name,
-            size: file.size,
-            lastModified: file.lastModified,
-            handle: entry,
-          });
+        try {
+          const file = await entry.getFile();
+          // Skip files being written (modified in last 3 seconds)
+          const age = Date.now() - file.lastModified;
+          if (age < 3000) continue;
+
+          const key = `${entry.name}|${file.size}`;
+          if (!knownFiles.has(key)) {
+            newFiles.push({
+              name: entry.name,
+              size: file.size,
+              lastModified: file.lastModified,
+              handle: entry,
+            });
+          }
+        } catch (fileErr) {
+          // File was deleted/renamed between iteration and getFile() — skip it
+          console.warn(`Skipping inaccessible file "${entry.name}":`, fileErr);
         }
       }
 
-      if (newFiles.length > 0) {
-        setDetectedFiles((prev) => {
-          const existingNames = new Set(prev.map((f) => f.name));
-          const truly = newFiles.filter((f) => !existingNames.has(f.name));
-          return [...prev, ...truly];
-        });
-      }
+      if (!mountedRef.current) return; // Abort if unmounted during iteration
+
+      setDetectedFiles((prev) => {
+        // Remove entries that no longer exist on disk
+        let updated = prev.filter((f) => diskFileNames.has(f.name));
+        // Update existing or append new files
+        for (const nf of newFiles) {
+          const existingIdx = updated.findIndex((f) => f.name === nf.name);
+          if (existingIdx >= 0) {
+            updated[existingIdx] = nf;
+          } else {
+            updated.push(nf);
+          }
+        }
+        return updated;
+      });
     } catch (err) {
       console.error("Folder scan error:", err);
     }
@@ -110,6 +139,7 @@ export function useFolderWatcher() {
 
   const clearHistory = () => {
     setKnownFiles(new Set());
+    setDetectedFiles([]);
     saveSetting("watch_known_files", []);
   };
 

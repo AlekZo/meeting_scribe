@@ -3,19 +3,44 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
   Upload,
-  FileText,
   List,
   Settings,
   Mic,
   Activity,
   ScrollText,
+  Cpu,
+  MessageCircle,
+  Calendar,
 } from "lucide-react";
+import { loadSetting } from "@/lib/storage";
+
+function ServiceStatusIndicators() {
+  const scriberrUrl = loadSetting<string>("scriberr_url", "");
+  const tgEnabled = loadSetting<boolean>("tg_enabled", false);
+  const googleCalId = loadSetting<string>("google_calendar_id", "");
+
+  const items = [
+    { label: "Scriberr", icon: Cpu, connected: !!scriberrUrl },
+    { label: "Telegram", icon: MessageCircle, connected: tgEnabled },
+    { label: "Google", icon: Calendar, connected: !!googleCalId },
+  ];
+
+  return (
+    <div className="flex items-center gap-3">
+      {items.map((item) => (
+        <div key={item.label} className="flex items-center gap-1" title={`${item.label}: ${item.connected ? "Configured" : "Not configured"}`}>
+          <item.icon className="h-3 w-3 text-muted-foreground" />
+          <span className={cn("h-1.5 w-1.5 rounded-full", item.connected ? "bg-success" : "bg-muted-foreground/40")} />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
   { to: "/upload", icon: Upload, label: "Upload" },
   { to: "/meetings", icon: List, label: "Meetings" },
-  { to: "/transcriptions", icon: FileText, label: "Transcriptions" },
   { to: "/activity", icon: ScrollText, label: "Activity Log" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
@@ -61,11 +86,12 @@ export function AppSidebar() {
       </nav>
 
       {/* Status */}
-      <div className="border-t border-border px-4 py-3">
+      <div className="border-t border-border px-4 py-3 space-y-2">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Activity className="h-3 w-3 text-success animate-pulse-glow" />
           <span className="font-mono">System Online</span>
         </div>
+        <ServiceStatusIndicators />
       </div>
     </aside>
   );

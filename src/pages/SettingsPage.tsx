@@ -3,12 +3,27 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Brain } from "lucide-react";
+import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { toast } from "sonner";
+import AIModelRoutingSection from "@/components/settings/AIModelRoutingSection";
 import { cn } from "@/lib/utils";
 import { loadSetting, saveSetting } from "@/lib/storage";
 import AIPromptsSection from "@/components/settings/AIPromptsSection";
 import OfflineSyncSection from "@/components/settings/OfflineSyncSection";
 import FolderWatchSection from "@/components/settings/FolderWatchSection";
+import AutoTagRulesSection from "@/components/settings/AutoTagRulesSection";
+import ExcelImportSection from "@/components/settings/ExcelImportSection";
 
 type ConnectionStatus = "untested" | "testing" | "connected" | "error";
 
@@ -20,8 +35,6 @@ export default function SettingsPage() {
   const [tgBotToken, setTgBotToken] = useState("");
   const [tgChatId, setTgChatId] = useState("");
   const [tgEnabled, setTgEnabled] = useState(false);
-  const [openRouterKey, setOpenRouterKey] = useState("");
-  const [openRouterModel, setOpenRouterModel] = useState("openai/gpt-4o-mini");
 
   const [scriberrStatus, setScriberrStatus] = useState<ConnectionStatus>("untested");
   const [tgStatus, setTgStatus] = useState<ConnectionStatus>("untested");
@@ -130,41 +143,8 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* OpenRouter / AI */}
-      <section className="space-y-4 rounded-lg border border-border bg-card p-6">
-        <div className="flex items-center gap-2">
-          <Brain className="h-4 w-4 text-warning" />
-          <h2 className="text-base font-medium">AI Speaker Identification</h2>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Uses OpenRouter to analyze transcripts and identify speakers by name from context clues
-        </p>
-        <div className="space-y-3">
-          <div>
-            <Label className="text-xs text-muted-foreground">OpenRouter API Key</Label>
-            <Input
-              type="password"
-              value={openRouterKey}
-              onChange={(e) => setOpenRouterKey(e.target.value)}
-              className="mt-1 bg-background font-mono text-sm"
-              placeholder="sk-or-..."
-            />
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Model</Label>
-            <select
-              value={openRouterModel}
-              onChange={(e) => setOpenRouterModel(e.target.value)}
-              className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
-            >
-              <option value="openai/gpt-4o-mini">GPT-4o Mini (fast, cheap)</option>
-              <option value="openai/gpt-4o">GPT-4o (best quality)</option>
-              <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
-              <option value="google/gemini-pro-1.5">Gemini Pro 1.5</option>
-            </select>
-          </div>
-        </div>
-      </section>
+      {/* AI Model Routing */}
+      <AIModelRoutingSection />
 
       {/* Processing */}
       <section className="space-y-4 rounded-lg border border-border bg-card p-6">
@@ -218,11 +198,40 @@ export default function SettingsPage() {
             <Input className="mt-1 bg-background font-mono text-sm" placeholder="Meeting_Logs" defaultValue="Meeting_Logs" />
           </div>
           <div>
-            <Label className="text-xs text-muted-foreground">Timezone Offset (hours from UTC)</Label>
-            <Input className="mt-1 bg-background font-mono text-sm w-24" placeholder="0" defaultValue="0" type="number" />
+            <Label className="text-xs text-muted-foreground">Timezone</Label>
+            <select
+              className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
+              defaultValue="Europe/Moscow"
+            >
+              <option value="Pacific/Midway">(UTC-11:00) Midway</option>
+              <option value="Pacific/Honolulu">(UTC-10:00) Honolulu</option>
+              <option value="America/Anchorage">(UTC-09:00) Anchorage</option>
+              <option value="America/Los_Angeles">(UTC-08:00) Los Angeles</option>
+              <option value="America/Denver">(UTC-07:00) Denver</option>
+              <option value="America/Chicago">(UTC-06:00) Chicago</option>
+              <option value="America/New_York">(UTC-05:00) New York</option>
+              <option value="America/Sao_Paulo">(UTC-03:00) São Paulo</option>
+              <option value="Atlantic/Reykjavik">(UTC+00:00) Reykjavik</option>
+              <option value="Europe/London">(UTC+00:00) London</option>
+              <option value="Europe/Berlin">(UTC+01:00) Berlin</option>
+              <option value="Europe/Paris">(UTC+01:00) Paris</option>
+              <option value="Europe/Istanbul">(UTC+03:00) Istanbul</option>
+              <option value="Europe/Moscow">(UTC+03:00) Moscow</option>
+              <option value="Asia/Dubai">(UTC+04:00) Dubai</option>
+              <option value="Asia/Kolkata">(UTC+05:30) Kolkata</option>
+              <option value="Asia/Almaty">(UTC+06:00) Almaty</option>
+              <option value="Asia/Bangkok">(UTC+07:00) Bangkok</option>
+              <option value="Asia/Shanghai">(UTC+08:00) Shanghai</option>
+              <option value="Asia/Tokyo">(UTC+09:00) Tokyo</option>
+              <option value="Australia/Sydney">(UTC+10:00) Sydney</option>
+              <option value="Pacific/Auckland">(UTC+12:00) Auckland</option>
+            </select>
           </div>
         </div>
       </section>
+
+      {/* Auto-Tagging Rules */}
+      <AutoTagRulesSection />
 
       {/* AI Prompts */}
       <AIPromptsSection />
@@ -233,7 +242,9 @@ export default function SettingsPage() {
       {/* Folder Watcher */}
       <FolderWatchSection />
 
-      {/* Whisper Config */}
+      {/* Excel Import */}
+      <ExcelImportSection />
+
       <section className="space-y-4 rounded-lg border border-border bg-card p-6">
         <h2 className="text-base font-medium">Transcription Engine</h2>
         <p className="text-xs text-muted-foreground">WhisperX configuration passed to Scriberr API</p>
@@ -295,10 +306,43 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      <Button className="gap-2">
-        <Save className="h-4 w-4" />
-        Save Settings
-      </Button>
+      <div className="flex items-center justify-between">
+        <Button className="gap-2">
+          <Save className="h-4 w-4" />
+          Save Settings
+        </Button>
+
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="outline" className="gap-2 text-destructive border-destructive/30 hover:bg-destructive/10">
+              <Trash2 className="h-4 w-4" />
+              Clear All Data
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Clear all application data?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all meetings, transcripts, settings, auto-tagging rules, AI usage history, and activity logs from local storage. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => {
+                  const keys = Object.keys(localStorage).filter((k) => k.startsWith("meetscribe_"));
+                  keys.forEach((k) => localStorage.removeItem(k));
+                  toast.success(`Cleared ${keys.length} stored items`);
+                  setTimeout(() => window.location.reload(), 500);
+                }}
+              >
+                Delete Everything
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
     </div>
   );
 }
