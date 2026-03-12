@@ -6,6 +6,7 @@ import archiver from "archiver";
 import unzipper from "unzipper";
 import multer from "multer";
 import { Readable } from "stream";
+import os from "os";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const PORT = process.env.PORT || 3001;
@@ -29,9 +30,18 @@ db.exec(`
 `);
 
 const app = express();
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "5mb" }));
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
+// Use disk storage instead of memory to avoid RAM spikes on large uploads
+const uploadDir = path.join(os.tmpdir(), "meetscribe-uploads");
+fs.mkdirSync(uploadDir, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: uploadDir,
+    filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
+  }),
+  limits: { fileSize: 200 * 1024 * 1024 },
+});
 
 // ── Health ──
 app.get("/api/health", (_req, res) => {
@@ -41,10 +51,10 @@ app.get("/api/health", (_req, res) => {
 // ── Get all key-value pairs ──
 app.get("/api/store", (_req, res) => {
   try {
-    const rows = db.prepare("SELECT key, value FROM store").all();
+    const rows = db.prepare("SELECT key, value, updated_at FROM store").all();
     const data = {};
     for (const row of rows) {
-      data[row.key] = row.value;
+      data[row.key] = { value: row.value, updated_at: row.updated_at };
     }
     res.json(data);
   } catch (err) {
@@ -80,7 +90,7 @@ app.put("/api/store/:key", (req, res) => {
 // ── Bulk set (for initial sync or restore) ──
 app.post("/api/store/bulk", (req, res) => {
   try {
-    const entries = req.body; // { key: value, ... }
+    const entries = req.body;
     const upsert = db.prepare(
       "INSERT INTO store (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     );
@@ -106,12 +116,12 @@ app.delete("/api/store/:key", (req, res) => {
   }
 });
 
-// ── Backup: download as zip with folder structure ──
-app.get("/api/backup", (_req, res) => {
+// ── Backup: download as zip (safe WAL snapshot) ──
+app.get("/api/backup", async (_req, res) => {
   try {
     const rows = db.prepare("SELECT key, value FROM store").all();
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    
+
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="meetscribe-backup-${timestamp}.zip"`);
 
@@ -132,7 +142,6 @@ app.get("/api/backup", (_req, res) => {
       if (key === "meetscribe_activity_log") {
         activityLog = value;
       } else if (key === "meetscribe_meetings") {
-        // Parse meetings array and write each separately
         try {
           const arr = JSON.parse(value);
           if (Array.isArray(arr)) {
@@ -147,7 +156,6 @@ app.get("/api/backup", (_req, res) => {
         const meetingId = key.replace("meetscribe_meeting_override_", "");
         overrides[meetingId] = value;
       } else if (key === "meetscribe_transcripts") {
-        // Parse transcripts object
         try {
           const obj = JSON.parse(value);
           for (const [mid, segs] of Object.entries(obj)) {
@@ -157,13 +165,12 @@ app.get("/api/backup", (_req, res) => {
           transcripts["_raw"] = value;
         }
       } else {
-        // Everything else is a setting
         const settingKey = key.replace("meetscribe_", "");
         settings[settingKey] = value;
       }
     }
 
-    // Write files into archive
+    // Write JSON files into archive
     archive.append(JSON.stringify(settings, null, 2), { name: "settings.json" });
 
     if (activityLog) {
@@ -182,8 +189,15 @@ app.get("/api/backup", (_req, res) => {
       archive.append(data, { name: `transcripts/${id}.json` });
     }
 
-    // Include raw SQLite DB copy for full fidelity
-    archive.file(dbPath, { name: "meetscribe.db" });
+    // Safe WAL-aware database snapshot using better-sqlite3's .backup()
+    const snapshotPath = path.join(DATA_DIR, "snapshot.db");
+    await db.backup(snapshotPath);
+    archive.file(snapshotPath, { name: "meetscribe.db" });
+
+    archive.on("end", () => {
+      // Clean up snapshot after archive is fully sent
+      try { fs.unlinkSync(snapshotPath); } catch {}
+    });
 
     archive.finalize();
   } catch (err) {
@@ -191,21 +205,27 @@ app.get("/api/backup", (_req, res) => {
   }
 });
 
-// ── Restore: upload zip backup ──
+// ── Restore: upload zip backup (from disk, not memory) ──
 app.post("/api/restore", upload.single("backup"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
   try {
     const entries = {};
-    const settings = {};
     const meetingsArr = [];
     const transcriptsObj = {};
 
-    const stream = Readable.from(req.file.buffer);
+    const stream = fs.createReadStream(req.file.path);
     const zip = stream.pipe(unzipper.Parse({ forceStream: true }));
 
     for await (const entry of zip) {
       const filePath = entry.path;
+
+      // Skip the raw .db file — we restore from JSON dumps for safety
+      if (filePath === "meetscribe.db") {
+        entry.autodrain();
+        continue;
+      }
+
       const content = (await entry.buffer()).toString("utf8");
 
       if (filePath === "settings.json") {
@@ -255,13 +275,18 @@ app.post("/api/restore", upload.single("backup"), async (req, res) => {
     });
     tx(entries);
 
+    // Clean up uploaded temp file
+    try { fs.unlinkSync(req.file.path); } catch {}
+
     res.json({ ok: true, restoredKeys: Object.keys(entries).length });
   } catch (err) {
+    // Clean up on error too
+    try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch {}
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── App info (for version tracking on updates) ──
+// ── App info ──
 app.get("/api/info", (_req, res) => {
   const pkg = JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8"));
   res.json({

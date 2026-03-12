@@ -1,4 +1,4 @@
-// OpenRouter API client with task-based model routing and cost tracking
+// OpenRouter API client with task-based model routing, cost tracking, and streaming
 
 import { loadSetting, saveSetting } from "@/lib/storage";
 
@@ -114,13 +114,61 @@ export interface OpenRouterResponse {
   usage: AIUsage;
 }
 
+// ── Custom error for missing API key ──
+
+export class MissingApiKeyError extends Error {
+  constructor() {
+    super("OpenRouter API key not configured");
+    this.name = "MissingApiKeyError";
+  }
+}
+
+// ── Pre-flight cost estimation ──
+
+/** Rough token estimate: ~4 chars per token */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Estimate the cost of an AI call before making it */
+export function estimateCallCost(task: AITask, inputText: string, modelOverride?: string): {
+  modelId: string;
+  modelLabel: string;
+  inputTokens: number;
+  estimatedOutputTokens: number;
+  estimatedCost: number;
+} {
+  const modelId = modelOverride ?? getModelForTask(task);
+  const catalog = getModelCatalog();
+  const model = catalog.find((m) => m.id === modelId);
+  const inputTokens = estimateTokens(inputText);
+  // Assume output is ~25% of input for summarization, ~50% for cleaning
+  const outputRatio = task === "summarization" ? 0.25 : task === "cleaning" ? 0.5 : 0.3;
+  const estimatedOutputTokens = Math.ceil(inputTokens * outputRatio);
+  const cost = model
+    ? (inputTokens / 1_000_000) * model.costIn + (estimatedOutputTokens / 1_000_000) * model.costOut
+    : 0;
+  return {
+    modelId,
+    modelLabel: model?.label ?? modelId,
+    inputTokens,
+    estimatedOutputTokens,
+    estimatedCost: cost,
+  };
+}
+
+/** Cost threshold above which we should warn the user */
+export const COST_WARNING_THRESHOLD = 0.50; // $0.50
+
+// ── Standard (non-streaming) API call ──
+
 export async function callOpenRouter(
   task: AITask,
   messages: ChatMessage[],
   options?: { modelOverride?: string }
 ): Promise<OpenRouterResponse> {
   const apiKey = getOpenRouterKey();
-  if (!apiKey) throw new Error("OpenRouter API key not configured. Go to Settings to add it.");
+  if (!apiKey) throw new MissingApiKeyError();
 
   const modelId = options?.modelOverride ?? getModelForTask(task);
 
@@ -158,17 +206,100 @@ export async function callOpenRouter(
   };
 }
 
-// Accumulate usage per meeting
-export function trackMeetingUsage(meetingId: string, usage: AIUsage): void {
-  const all = loadSetting<Record<string, AIUsage>>("meeting_usage", {});
-  const prev = all[meetingId] ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 };
-  all[meetingId] = {
-    promptTokens: prev.promptTokens + usage.promptTokens,
-    completionTokens: prev.completionTokens + usage.completionTokens,
-    totalTokens: prev.totalTokens + usage.totalTokens,
-    estimatedCost: prev.estimatedCost + usage.estimatedCost,
+// ── Streaming API call ──
+
+export async function callOpenRouterStreaming(
+  task: AITask,
+  messages: ChatMessage[],
+  onChunk: (text: string) => void,
+  options?: { modelOverride?: string }
+): Promise<OpenRouterResponse> {
+  const apiKey = getOpenRouterKey();
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const modelId = options?.modelOverride ?? getModelForTask(task);
+
+  const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": window.location.origin,
+      "X-Title": "MeetingScribe",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: modelId, messages, stream: true }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`OpenRouter error (${resp.status}): ${text}`);
+  }
+
+  const reader = resp.body?.getReader();
+  if (!reader) throw new Error("No response body");
+
+  const decoder = new TextDecoder();
+  let fullContent = "";
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data: ")) continue;
+      const jsonStr = trimmed.slice(6);
+      if (jsonStr === "[DONE]") continue;
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (delta) {
+          fullContent += delta;
+          onChunk(fullContent);
+        }
+      } catch {
+        // Skip malformed chunks
+      }
+    }
+  }
+
+  // Estimate tokens from content since streaming doesn't always return usage
+  const inputText = messages.map((m) => m.content).join(" ");
+  const promptTokens = estimateTokens(inputText);
+  const completionTokens = estimateTokens(fullContent);
+
+  return {
+    content: fullContent,
+    usage: {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      estimatedCost: estimateCost(modelId, promptTokens, completionTokens),
+    },
   };
-  saveSetting("meeting_usage", all);
+}
+
+// Queue for serializing usage tracking writes to avoid race conditions
+let usageWriteQueue: Promise<void> = Promise.resolve();
+
+export function trackMeetingUsage(meetingId: string, usage: AIUsage): void {
+  usageWriteQueue = usageWriteQueue.then(() => {
+    const all = loadSetting<Record<string, AIUsage>>("meeting_usage", {});
+    const prev = all[meetingId] ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 };
+    all[meetingId] = {
+      promptTokens: prev.promptTokens + usage.promptTokens,
+      completionTokens: prev.completionTokens + usage.completionTokens,
+      totalTokens: prev.totalTokens + usage.totalTokens,
+      estimatedCost: prev.estimatedCost + usage.estimatedCost,
+    };
+    saveSetting("meeting_usage", all);
+  });
 }
 
 export function getMeetingUsage(meetingId: string): AIUsage {

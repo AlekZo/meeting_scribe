@@ -1,5 +1,6 @@
 services:
   meetscribe:
+    image: meeting-scribe-web
     build: .
     ports:
       - "7899:7899"
@@ -8,6 +9,7 @@ services:
     restart: unless-stopped
 
   api:
+    image: meeting-scribe-api
     build: ./server
     ports:
       - "3001:3001"

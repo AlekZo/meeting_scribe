@@ -1,5 +1,5 @@
 import { MeetingRow } from "@/components/MeetingRow";
-import { sampleMeetings, MEETING_CATEGORIES, MeetingCategory, TagRule } from "@/data/meetings";
+import { MEETING_CATEGORIES, MeetingCategory, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, loadSetting, saveSetting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
 import { Input } from "@/components/ui/input";
@@ -23,7 +23,7 @@ export default function MeetingsPage() {
   const typeRules = loadSetting<TagRule[]>("type_rules", []);
   const categoryRules = loadSetting<TagRule[]>("category_rules", []);
 
-  const allMeetings = [...sampleMeetings, ...loadMeetings()];
+  const allMeetings = loadMeetings();
 
   const meetingsWithOverrides = allMeetings.map((m) => {
     const ov = loadMeetingOverrides(m.id);

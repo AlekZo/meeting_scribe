@@ -1,9 +1,11 @@
 // Hybrid storage layer: localStorage for speed + server SQLite for persistence
 // On load: fetch all from server → merge into localStorage
 // On write: localStorage (immediate) + async POST to server
+// Emits sync status events for UI indicator
 
 import type { Meeting } from "@/data/meetings";
 import type { TranscriptSegment } from "@/components/MeetingPlayer";
+import { emitSyncStatus } from "@/components/SyncStatus";
 
 const STORAGE_PREFIX = "meetscribe_";
 
@@ -13,7 +15,7 @@ const API_BASE = "/api";
 
 let serverAvailable: boolean | null = null;
 let syncInitialized = false;
-const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingWrites = new Map<string, { timeout: ReturnType<typeof setTimeout>; value: string }>();
 
 async function checkServer(): Promise<boolean> {
   try {
@@ -25,30 +27,63 @@ async function checkServer(): Promise<boolean> {
   return serverAvailable;
 }
 
-/** Push a key to the server (debounced per key) */
-function syncToServer(key: string, value: string): void {
-  if (serverAvailable === false) return;
-
-  // Debounce: batch rapid writes to the same key
-  if (pendingWrites.has(key)) clearTimeout(pendingWrites.get(key)!);
-  pendingWrites.set(
-    key,
-    setTimeout(async () => {
-      pendingWrites.delete(key);
-      try {
-        await fetch(`${API_BASE}/store/${encodeURIComponent(key)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        });
-      } catch (err) {
-        console.warn(`[storage] Failed to sync key "${key}" to server:`, err);
-      }
-    }, 300)
-  );
+/** Flush a single pending write immediately */
+function flushWrite(key: string, value: string): void {
+  try {
+    navigator.sendBeacon(
+      `${API_BASE}/store/${encodeURIComponent(key)}`,
+      new Blob([JSON.stringify({ value })], { type: "application/json" })
+    );
+  } catch {
+    // Best-effort
+  }
 }
 
-/** Initial sync: pull all data from server into localStorage */
+/** Push a key to the server (debounced per key, with max delay guarantee) */
+function syncToServer(key: string, value: string): void {
+  if (serverAvailable === false) {
+    emitSyncStatus("offline");
+    return;
+  }
+
+  // Clear existing timeout for this key
+  const existing = pendingWrites.get(key);
+  if (existing) clearTimeout(existing.timeout);
+
+  emitSyncStatus("syncing");
+
+  const timeout = setTimeout(async () => {
+    pendingWrites.delete(key);
+    try {
+      await fetch(`${API_BASE}/store/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+      if (pendingWrites.size === 0) {
+        emitSyncStatus("saved");
+      }
+    } catch (err) {
+      console.warn(`[storage] Failed to sync key "${key}" to server:`, err);
+      emitSyncStatus("error", `Failed to sync: ${(err as Error).message}`);
+    }
+  }, 300);
+
+  pendingWrites.set(key, { timeout, value });
+}
+
+/** Flush all pending writes on page unload */
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    pendingWrites.forEach(({ timeout, value }, key) => {
+      clearTimeout(timeout);
+      flushWrite(key, value);
+    });
+    pendingWrites.clear();
+  });
+}
+
+/** Initial sync: pull all data from server into localStorage (server wins on conflicts via updated_at) */
 export async function initServerSync(): Promise<void> {
   if (syncInitialized) return;
   syncInitialized = true;
@@ -62,25 +97,36 @@ export async function initServerSync(): Promise<void> {
   try {
     const res = await fetch(`${API_BASE}/store`);
     if (!res.ok) return;
-    const data: Record<string, string> = await res.json();
+    const data: Record<string, { value: string; updated_at: string }> = await res.json();
     let merged = 0;
 
-    for (const [key, value] of Object.entries(data)) {
+    for (const [key, entry] of Object.entries(data)) {
+      // Support both old format (plain string) and new format ({value, updated_at})
+      const serverValue = typeof entry === "string" ? entry : entry.value;
+      const serverTime = typeof entry === "object" && entry.updated_at ? entry.updated_at : null;
+
       const existing = localStorage.getItem(key);
+      const localTime = localStorage.getItem(`${key}__ts`);
+
       if (!existing) {
         // Server has data that localStorage doesn't — pull it in
-        localStorage.setItem(key, value);
+        localStorage.setItem(key, serverValue);
+        if (serverTime) localStorage.setItem(`${key}__ts`, serverTime);
+        merged++;
+      } else if (serverTime && (!localTime || serverTime > localTime)) {
+        // Server data is newer — overwrite local
+        localStorage.setItem(key, serverValue);
+        localStorage.setItem(`${key}__ts`, serverTime);
         merged++;
       }
-      // If both have data, localStorage wins (user may have made offline changes)
-      // But if localStorage has data the server doesn't, push it up
+      // If local is newer or no timestamps, local wins (offline changes)
     }
 
     // Push any localStorage keys the server doesn't have
     const serverKeys = new Set(Object.keys(data));
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && key.startsWith(STORAGE_PREFIX) && !serverKeys.has(key)) {
+      if (key && key.startsWith(STORAGE_PREFIX) && !key.endsWith("__ts") && !serverKeys.has(key)) {
         const value = localStorage.getItem(key);
         if (value) syncToServer(key, value);
       }
@@ -109,6 +155,7 @@ export function saveSetting<T>(key: string, value: T): void {
   try {
     const serialized = JSON.stringify(value);
     localStorage.setItem(fullKey, serialized);
+    localStorage.setItem(`${fullKey}__ts`, new Date().toISOString());
     syncToServer(fullKey, serialized);
   } catch (e) {
     console.warn("Storage write failed:", e);
@@ -135,14 +182,17 @@ export function saveMeetings(meetings: Meeting[]): void {
 }
 
 export function loadTranscriptSegments(meetingId: string): TranscriptSegment[] | null {
+  // Try new per-meeting key first, fall back to legacy shared key
+  const perKey = loadSetting<TranscriptSegment[] | null>(`transcript_${meetingId}`, null);
+  if (perKey) return perKey;
+  // Legacy: check the old shared "transcripts" dictionary
   const all = loadSetting<Record<string, TranscriptSegment[]>>("transcripts", {});
   return all[meetingId] ?? null;
 }
 
 export function saveTranscriptSegments(meetingId: string, segments: TranscriptSegment[]): void {
-  const all = loadSetting<Record<string, TranscriptSegment[]>>("transcripts", {});
-  all[meetingId] = segments;
-  saveSetting("transcripts", all);
+  // Store under individual key to avoid 5MB localStorage limit
+  saveSetting(`transcript_${meetingId}`, segments);
 }
 
 export function loadActivityLog(): any[] {
@@ -208,6 +258,8 @@ export async function uploadRestore(file: File): Promise<{ restoredKeys: number 
       localStorage.setItem(key, value as string);
       count++;
     }
+    // Force reload so React picks up new localStorage data
+    setTimeout(() => window.location.reload(), 500);
     return { restoredKeys: count };
   }
 
@@ -218,9 +270,12 @@ export async function uploadRestore(file: File): Promise<{ restoredKeys: number 
   if (!res.ok) throw new Error("Restore failed");
   const result = await res.json();
 
-  // Re-sync from server to localStorage
+  // Re-sync from server to localStorage, then reload to pick up changes
   syncInitialized = false;
   await initServerSync();
+
+  // Force reload so React state reflects restored data
+  setTimeout(() => window.location.reload(), 500);
 
   return result;
 }

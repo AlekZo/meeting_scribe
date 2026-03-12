@@ -1,13 +1,26 @@
-import { ActivityLog, sampleActivity } from "@/components/ActivityLog";
+import { ActivityLog, ActivityEvent } from "@/components/ActivityLog";
 import { Input } from "@/components/ui/input";
-import { Search, Filter } from "lucide-react";
+import { Search, Filter, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { loadActivityLog, saveSetting } from "@/lib/storage";
+import { Button } from "@/components/ui/button";
 
 export default function ActivityPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<string>("all");
 
-  const filtered = sampleActivity.filter((e) => {
+  // Load real activity from storage
+  const rawLog = loadActivityLog();
+  const allActivity: ActivityEvent[] = rawLog.map((entry: any, i: number) => ({
+    id: entry.id || `log_${i}`,
+    timestamp: entry.timestamp || "",
+    type: entry.type || "system",
+    message: entry.message || "",
+    status: entry.status || (entry.type === "error" ? "error" : "success"),
+    details: entry.details,
+  }));
+
+  const filtered = allActivity.filter((e) => {
     if (filter !== "all" && e.type !== filter) return false;
     if (search && !e.message.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
@@ -22,6 +35,11 @@ export default function ActivityPage() {
     { value: "rename", label: "Rename" },
     { value: "error", label: "Errors" },
   ];
+
+  const handleClear = () => {
+    saveSetting("activity_log", []);
+    window.location.reload();
+  };
 
   return (
     <div className="space-y-6 2xl:space-y-8">
@@ -57,13 +75,21 @@ export default function ActivityPage() {
             </button>
           ))}
         </div>
+        {allActivity.length > 0 && (
+          <Button variant="ghost" size="sm" onClick={handleClear} className="text-xs text-muted-foreground gap-1">
+            <Trash2 className="h-3 w-3" />
+            Clear
+          </Button>
+        )}
       </div>
 
       <div className="rounded-lg border border-border bg-card">
         {filtered.length > 0 ? (
           <ActivityLog events={filtered} />
         ) : (
-          <p className="py-12 text-center text-sm text-muted-foreground">No activity found</p>
+          <p className="py-12 text-center text-sm text-muted-foreground">
+            {allActivity.length === 0 ? "No activity yet. Upload a file to see events here." : "No activity found"}
+          </p>
         )}
       </div>
     </div>

@@ -1,10 +1,10 @@
 import { useParams, useNavigate, NavLink } from "react-router-dom";
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { sampleMeetings, MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
+import { MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
 import { meetingIdFromSlug, meetingSlug, cn } from "@/lib/utils";
-import { callOpenRouter, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage } from "@/lib/openrouter";
+import { callOpenRouter, callOpenRouterStreaming, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage, MissingApiKeyError, estimateCallCost, COST_WARNING_THRESHOLD } from "@/lib/openrouter";
 import { toast } from "sonner";
 import { MeetingPlayer, TranscriptSegment } from "@/components/MeetingPlayer";
 import { ProcessingPipeline, PipelineStage } from "@/components/ProcessingPipeline";
@@ -65,7 +65,7 @@ const statusToPipeline: Record<string, PipelineStage> = {
 export default function MeetingDetailPage() {
   const { id: slugParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const allMeetings = useMemo(() => [...sampleMeetings, ...loadMeetings()], []);
+  const allMeetings = useMemo(() => loadMeetings(), []);
   // Resolve meeting: try direct id match first, then extract id from slug
   const meeting = useMemo(() => {
     if (!slugParam) return undefined;
@@ -176,10 +176,6 @@ export default function MeetingDetailPage() {
 
   const handleSuggestTitle = async () => {
     if (!safeSegments.length) return;
-    if (!getOpenRouterKey()) {
-      toast.error("OpenRouter API key not configured. Go to Settings.");
-      return;
-    }
     setIsSuggestingTitle(true);
     try {
       const excerpt = safeSegments.slice(0, 30).map((s) => `[${s.speaker}]: ${s.text}`).join("\n");
@@ -198,7 +194,13 @@ export default function MeetingDetailPage() {
         toast.success(`Title suggested! (${result.usage.totalTokens} tokens, $${result.usage.estimatedCost.toFixed(4)})`);
       }
     } catch (e: any) {
-      toast.error(e.message || "Failed to suggest title");
+      if (e instanceof MissingApiKeyError) {
+        toast.error("OpenRouter API key not configured.", {
+          action: { label: "Go to Settings", onClick: () => navigate("/settings") },
+        });
+      } else {
+        toast.error(e.message || "Failed to suggest title");
+      }
     } finally {
       setIsSuggestingTitle(false);
     }
@@ -211,7 +213,7 @@ export default function MeetingDetailPage() {
   useEffect(() => {
     const ov = id ? loadMeetingOverrides(id) : {};
     const stored = id ? loadTranscriptSegments(id) : null;
-    const allM = [...sampleMeetings, ...loadMeetings()];
+    const allM = loadMeetings();
     const m = allM.find((m) => m.id === id);
     setSegments(ov.segments ?? stored ?? m?.segments ?? []);
     setTitle(ov.title ?? m?.title ?? "");
@@ -265,25 +267,43 @@ export default function MeetingDetailPage() {
 
   const handleGenerateSummary = async () => {
     if (!safeSegments.length) return;
-    if (!getOpenRouterKey()) {
-      toast.error("OpenRouter API key not configured. Go to Settings to add it.");
-      return;
+
+    const transcript = safeSegments.map((s) => `[${s.speaker}]: ${s.text}`).join("\n");
+
+    // Pre-flight cost check
+    const estimate = estimateCallCost("summarization", transcript);
+    if (estimate.estimatedCost > COST_WARNING_THRESHOLD) {
+      const proceed = window.confirm(
+        `This will process ~${estimate.inputTokens.toLocaleString()} tokens using ${estimate.modelLabel}.\n` +
+        `Estimated cost: $${estimate.estimatedCost.toFixed(2)}\n\nProceed?`
+      );
+      if (!proceed) return;
     }
+
     setIsGenerating(true);
     try {
-      const transcript = safeSegments.map((s) => `[${s.speaker}]: ${s.text}`).join("\n");
-      const result = await callOpenRouter("summarization", [
-        {
-          role: "system",
-          content: `You are a meeting analyst. Given a transcript, produce a JSON object with:
+      // Use streaming so user sees text appearing in real-time
+      const result = await callOpenRouterStreaming(
+        "summarization",
+        [
+          {
+            role: "system",
+            content: `You are a meeting analyst. Given a transcript, produce a JSON object with:
 - "summary": a concise 2-4 sentence summary of the meeting
 - "actionItems": an array of objects with "assignee" (string) and "text" (string) for each action item discussed
 
 Respond ONLY with valid JSON, no markdown.`,
-        },
-        { role: "user", content: transcript },
-      ]);
+          },
+          { role: "user", content: transcript },
+        ],
+        (streamedText) => {
+          // Show partial text as it streams in
+          setSummary(streamedText);
+        }
+      );
+
       if (id) trackMeetingUsage(id, result.usage);
+
       try {
         const parsed = JSON.parse(result.content);
         const newSummary = parsed.summary ?? result.content;
@@ -301,12 +321,18 @@ Respond ONLY with valid JSON, no markdown.`,
         }
         toast.success(`Generated! Used ${result.usage.totalTokens.toLocaleString()} tokens ($${result.usage.estimatedCost.toFixed(4)})`);
       } catch {
-        setSummary(result.content);
+        // Streaming content wasn't valid JSON — keep as-is
         if (id) saveMeetingOverride(id, "summary", result.content);
         toast.success("Summary generated (could not parse action items)");
       }
     } catch (e: any) {
-      toast.error(e.message || "Failed to generate summary");
+      if (e instanceof MissingApiKeyError) {
+        toast.error("OpenRouter API key not configured.", {
+          action: { label: "Go to Settings", onClick: () => navigate("/settings") },
+        });
+      } else {
+        toast.error(e.message || "Failed to generate summary");
+      }
     } finally {
       setIsGenerating(false);
     }
