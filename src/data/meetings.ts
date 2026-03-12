@@ -46,6 +46,7 @@ export interface Meeting {
   actionItems?: ActionItem[];
   tokensSpent?: number;
   estimatedCost?: number;
+  fileSize?: number; // bytes
   segments: TranscriptSegment[];
 }
 
@@ -62,6 +63,7 @@ export const sampleMeetings: Meeting[] = [
     tags: ["sprint", "planning", "q1"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=abc123",
     calendarEventId: "abc123",
+    fileSize: 287_000_000,
     summary: "The team aligned on the primary backlog items for the upcoming sprint. Dev completed the OAuth integration and is moving it to review. Sarah will tackle API rate limiting over two days. The team agreed to use webhook mode for the Telegram bot and decided on a self-hosted Docker network approach for the Scriberr transcription service to maintain data privacy.",
     actionItems: [
       { id: "a1", assignee: "Dev Patel", text: "Merge the completed OAuth and refresh token logic by end of day", done: false },
@@ -99,6 +101,7 @@ export const sampleMeetings: Meeting[] = [
     tags: ["dashboard", "ui", "dark-theme"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=def456",
     calendarEventId: "def456",
+    fileSize: 48_500_000,
     summary: "Maria presented the new dashboard designs with the dark theme using emerald accents. James approved the direction. Discussion moved to ensuring the transcript player component supports both audio and video playback.",
     actionItems: [
       { id: "a6", assignee: "Maria Lopez", text: "Finalize the video variant of the transcript player in Figma", done: false },
@@ -120,6 +123,7 @@ export const sampleMeetings: Meeting[] = [
     mediaType: "video",
     category: "Client Sync",
     tags: ["acme", "client"],
+    fileSize: 412_000_000,
     segments: [],
   },
   {
@@ -134,6 +138,7 @@ export const sampleMeetings: Meeting[] = [
     tags: ["daily", "standup"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=ghi789",
     calendarEventId: "ghi789",
+    fileSize: 22_100_000,
     summary: "Quick daily standup. Dev finished the file upload component and started the queue worker. Sarah fixed the calendar integration bug and deployed a hotfix.",
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 8, text: "Quick standup. What did everyone work on yesterday?" },
@@ -151,6 +156,7 @@ export const sampleMeetings: Meeting[] = [
     mediaType: "video",
     category: "Product",
     tags: ["roadmap", "strategy"],
+    fileSize: 530_000_000,
     segments: [],
   },
   {
@@ -163,6 +169,7 @@ export const sampleMeetings: Meeting[] = [
     mediaType: "audio",
     category: "Engineering",
     tags: ["docker", "infrastructure"],
+    fileSize: 41_200_000,
     summary: "The team discussed finalizing the Docker setup for the transcription pipeline. Dev drafted the docker-compose file including Scriberr, the file watcher, and the Telegram bot.",
     actionItems: [
       { id: "a8", assignee: "Dev Patel", text: "Finalize and test the docker-compose configuration", done: false },
@@ -183,6 +190,7 @@ export const sampleMeetings: Meeting[] = [
     mediaType: "audio",
     category: "1:1",
     tags: ["growth", "career"],
+    fileSize: 33_800_000,
     segments: [
       { speaker: "Alex Chen", startTime: 0, endTime: 15, text: "Let's talk about your growth goals for this quarter and how the project is going." },
       { speaker: "Dev Patel", startTime: 15, endTime: 30, text: "I'd like to focus more on system design. The meeting transcription project is a great opportunity for that." },
@@ -200,6 +208,7 @@ export const sampleMeetings: Meeting[] = [
     tags: ["company", "quarterly", "growth"],
     calendarEventUrl: "https://calendar.google.com/calendar/event?eid=jkl012",
     calendarEventId: "jkl012",
+    fileSize: 620_000_000,
     segments: [
       { speaker: "CEO", startTime: 0, endTime: 20, text: "Welcome everyone to the Q1 all hands. We've had an incredible quarter with record growth." },
       { speaker: "CTO", startTime: 20, endTime: 40, text: "On the engineering side, we've shipped 47 features and reduced our incident response time by 60%." },

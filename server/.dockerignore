@@ -1,11 +1,6 @@
 node_modules
-dist
-.git
-*.md
-server/node_modules
 *.db
 *.db-wal
 *.db-shm
 .env
 .env.*
-*.local

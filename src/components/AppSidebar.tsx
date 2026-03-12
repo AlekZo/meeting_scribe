@@ -11,10 +11,19 @@ import {
   Cpu,
   MessageCircle,
   Calendar,
+  PanelLeftClose,
+  PanelLeft,
 } from "lucide-react";
-import { loadSetting } from "@/lib/storage";
+import { loadSetting, saveSetting } from "@/lib/storage";
+import { useState } from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
-function ServiceStatusIndicators() {
+function ServiceStatusIndicators({ collapsed }: { collapsed: boolean }) {
   const scriberrUrl = loadSetting<string>("scriberr_url", "");
   const tgEnabled = loadSetting<boolean>("tg_enabled", false);
   const googleCalId = loadSetting<string>("google_calendar_id", "");
@@ -26,11 +35,11 @@ function ServiceStatusIndicators() {
   ];
 
   return (
-    <div className="flex items-center gap-3">
+    <div className={cn("flex items-center", collapsed ? "flex-col gap-2" : "gap-3")}>
       {items.map((item) => (
         <div key={item.label} className="flex items-center gap-1" title={`${item.label}: ${item.connected ? "Configured" : "Not configured"}`}>
           <item.icon className="h-3 w-3 text-muted-foreground" />
-          <span className={cn("h-1.5 w-1.5 rounded-full", item.connected ? "bg-success" : "bg-muted-foreground/40")} />
+          {!collapsed && <span className={cn("h-1.5 w-1.5 rounded-full", item.connected ? "bg-success" : "bg-muted-foreground/40")} />}
         </div>
       ))}
     </div>
@@ -39,7 +48,6 @@ function ServiceStatusIndicators() {
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/upload", icon: Upload, label: "Upload" },
   { to: "/meetings", icon: List, label: "Meetings" },
   { to: "/activity", icon: ScrollText, label: "Activity Log" },
   { to: "/settings", icon: Settings, label: "Settings" },
@@ -47,52 +55,97 @@ const navItems = [
 
 export function AppSidebar() {
   const location = useLocation();
+  const [collapsed, setCollapsed] = useState(() => loadSetting<boolean>("sidebar_collapsed", false));
+
+  const toggle = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    saveSetting("sidebar_collapsed", next);
+  };
 
   return (
-    <aside className="fixed left-0 top-0 z-40 flex h-screen w-60 flex-col border-r border-border bg-sidebar">
-      {/* Logo */}
-      <div className="flex h-14 items-center gap-2 border-b border-border px-5">
-        <div className="flex h-7 w-7 items-center justify-center rounded bg-primary">
-          <Mic className="h-4 w-4 text-primary-foreground" />
+    <TooltipProvider delayDuration={300}>
+      <aside className={cn(
+        "fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-border bg-sidebar transition-all duration-200",
+        collapsed ? "w-14" : "w-60"
+      )}>
+        {/* Logo */}
+        <div className={cn("flex h-14 items-center border-b border-border", collapsed ? "justify-center px-2" : "gap-2 px-5")}>
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-primary">
+            <Mic className="h-4 w-4 text-primary-foreground" />
+          </div>
+          {!collapsed && (
+            <span className="font-semibold tracking-tight text-foreground">
+              MeetingHub
+            </span>
+          )}
         </div>
-        <span className="font-semibold tracking-tight text-foreground">
-          MeetingHub
-        </span>
-      </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 space-y-1 px-3 py-4">
-        {navItems.map((item) => {
-          const isActive =
-            item.to === "/"
-              ? location.pathname === "/"
-              : location.pathname.startsWith(item.to);
-          return (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-sidebar-accent text-primary"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </NavLink>
-          );
-        })}
-      </nav>
+        {/* Navigation */}
+        <nav className={cn("flex-1 space-y-1 py-4", collapsed ? "px-1.5" : "px-3")}>
+          {navItems.map((item) => {
+            const isActive =
+              item.to === "/"
+                ? location.pathname === "/"
+                : location.pathname.startsWith(item.to);
 
-      {/* Status */}
-      <div className="border-t border-border px-4 py-3 space-y-2">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Activity className="h-3 w-3 text-success animate-pulse-glow" />
-          <span className="font-mono">System Online</span>
+            const link = (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={cn(
+                  "flex items-center rounded-md transition-colors",
+                  collapsed ? "justify-center px-2 py-2" : "gap-3 px-3 py-2 text-sm font-medium",
+                  isActive
+                    ? "bg-sidebar-accent text-primary"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                )}
+              >
+                <item.icon className="h-4 w-4 shrink-0" />
+                {!collapsed && item.label}
+              </NavLink>
+            );
+
+            if (collapsed) {
+              return (
+                <Tooltip key={item.to}>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right" className="text-xs">
+                    {item.label}
+                  </TooltipContent>
+                </Tooltip>
+              );
+            }
+            return link;
+          })}
+        </nav>
+
+        {/* Collapse toggle */}
+        <div className={cn("border-t border-border", collapsed ? "px-2 py-2 flex justify-center" : "px-3 py-2")}>
+          <button
+            onClick={toggle}
+            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-sidebar-accent transition-colors w-full"
+          >
+            {collapsed ? (
+              <PanelLeft className="h-4 w-4 mx-auto" />
+            ) : (
+              <>
+                <PanelLeftClose className="h-4 w-4" />
+                <span>Collapse</span>
+              </>
+            )}
+          </button>
         </div>
-        <ServiceStatusIndicators />
-      </div>
-    </aside>
+
+        {/* Status */}
+        <div className={cn("border-t border-border py-3 space-y-2", collapsed ? "px-2 flex flex-col items-center" : "px-4")}>
+          <div className={cn("flex items-center text-xs text-muted-foreground", collapsed ? "justify-center" : "gap-2")}>
+            <Activity className="h-3 w-3 text-success animate-pulse-glow" />
+            {!collapsed && <span className="font-mono">System Online</span>}
+          </div>
+          <ServiceStatusIndicators collapsed={collapsed} />
+        </div>
+      </aside>
+    </TooltipProvider>
   );
 }

@@ -3,12 +3,14 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { sampleMeetings, MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
+import { meetingIdFromSlug, meetingSlug, cn } from "@/lib/utils";
 import { callOpenRouter, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage } from "@/lib/openrouter";
 import { toast } from "sonner";
 import { MeetingPlayer, TranscriptSegment } from "@/components/MeetingPlayer";
 import { ProcessingPipeline, PipelineStage } from "@/components/ProcessingPipeline";
 import { TranscriptExport } from "@/components/TranscriptExport";
 import { MeetingMetaMenu } from "@/components/MeetingMetaMenu";
+import { MeetingSidebar } from "@/components/MeetingSidebar";
 import { MeetingSummary } from "@/components/MeetingSummary";
 import {
   DropdownMenu,
@@ -38,6 +40,7 @@ import {
   FileText as FileTextIcon,
   FileText,
   ChevronRight,
+  ChevronLeft,
   History,
   CheckCircle2,
   Loader2,
@@ -60,25 +63,56 @@ const statusToPipeline: Record<string, PipelineStage> = {
 };
 
 export default function MeetingDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id: slugParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const allMeetings = useMemo(() => [...sampleMeetings, ...loadMeetings()], []);
-  const meeting = allMeetings.find((m) => m.id === id);
+  // Resolve meeting: try direct id match first, then extract id from slug
+  const meeting = useMemo(() => {
+    if (!slugParam) return undefined;
+    const direct = allMeetings.find((m) => m.id === slugParam);
+    if (direct) return direct;
+    const extractedId = meetingIdFromSlug(slugParam);
+    return allMeetings.find((m) => m.id === extractedId);
+  }, [allMeetings, slugParam]);
+  const id = meeting?.id;
   const otherMeetings = allMeetings.filter((m) => m.id !== id);
 
-  // Series: meetings with the same (or very similar) title
+  // Series: meetings with the same or similar title (fuzzy match)
   const seriesMeetings = useMemo(() => {
     if (!meeting) return [];
-    const baseTitle = meeting.title.replace(/\s*[-–—]\s*\d{4}[-/]\d{2}[-/]\d{2}.*$/, "").trim().toLowerCase();
+    // Normalize: strip trailing dates, numbers, hyphens, and common suffixes
+    const normalize = (t: string) =>
+      t
+        .replace(/\s*[-–—]\s*\d{4}[-/]\d{2}[-/]\d{2}.*$/, "")
+        .replace(/\s*#\d+\s*$/, "")
+        .replace(/\s*\(\d+\)\s*$/, "")
+        .trim()
+        .toLowerCase();
+    const baseTitle = normalize(meeting.title);
     return allMeetings
       .filter((m) => {
         if (m.id === id) return false;
-        const t = m.title.replace(/\s*[-–—]\s*\d{4}[-/]\d{2}[-/]\d{2}.*$/, "").trim().toLowerCase();
-        return t === baseTitle || m.title.toLowerCase() === meeting.title.toLowerCase();
+        const t = normalize(m.title);
+        // Exact normalized match or one contains the other (for slight variations)
+        return (
+          t === baseTitle ||
+          m.title.toLowerCase() === meeting.title.toLowerCase() ||
+          (baseTitle.length > 5 && (t.includes(baseTitle) || baseTitle.includes(t)))
+        );
       })
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 10);
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(0, 50);
   }, [allMeetings, meeting, id]);
+
+  // Sorted series including current for prev/next navigation
+  const sortedSeries = useMemo(() => {
+    if (!meeting || seriesMeetings.length === 0) return [];
+    return [...seriesMeetings, meeting].sort((a, b) => a.date.localeCompare(b.date));
+  }, [seriesMeetings, meeting]);
+
+  const currentSeriesIdx = sortedSeries.findIndex((m) => m.id === id);
+  const prevMeeting = currentSeriesIdx > 0 ? sortedSeries[currentSeriesIdx - 1] : null;
+  const nextMeeting = currentSeriesIdx >= 0 && currentSeriesIdx < sortedSeries.length - 1 ? sortedSeries[currentSeriesIdx + 1] : null;
 
   // Load persisted overrides
   const overrides = id ? loadMeetingOverrides(id) : {};
@@ -92,6 +126,14 @@ export default function MeetingDetailPage() {
   const [title, setTitle] = useState(overrides.title ?? meeting?.title ?? "");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
+
+  const [meetingDate, setMeetingDate] = useState(overrides.date ?? meeting?.date ?? "");
+  const [isEditingDate, setIsEditingDate] = useState(false);
+  const [editDateValue, setEditDateValue] = useState("");
+
+  const [meetingDuration, setMeetingDuration] = useState(overrides.duration ?? meeting?.duration ?? "");
+  const [isEditingDuration, setIsEditingDuration] = useState(false);
+  const [editDurationValue, setEditDurationValue] = useState("");
 
   const [calendarUrl, setCalendarUrl] = useState(overrides.calendarUrl ?? meeting?.calendarEventUrl ?? "");
   const [isEditingCal, setIsEditingCal] = useState(false);
@@ -173,6 +215,8 @@ export default function MeetingDetailPage() {
     const m = allM.find((m) => m.id === id);
     setSegments(ov.segments ?? stored ?? m?.segments ?? []);
     setTitle(ov.title ?? m?.title ?? "");
+    setMeetingDate(ov.date ?? m?.date ?? "");
+    setMeetingDuration(ov.duration ?? m?.duration ?? "");
     setCalendarUrl(ov.calendarUrl ?? m?.calendarEventUrl ?? "");
     setGoogleDocUrl(ov.googleDocUrl ?? "");
     setCategory(ov.category ?? m?.category);
@@ -184,6 +228,8 @@ export default function MeetingDetailPage() {
     setAutoCategories(ov.autoCategories ?? m?.autoCategories ?? at.autoCategories);
     setIsEditingTitle(false);
     setIsEditingCal(false);
+    setIsEditingDate(false);
+    setIsEditingDuration(false);
     setTranscriptSearch("");
   }, [id]);
 
@@ -288,6 +334,33 @@ Respond ONLY with valid JSON, no markdown.`,
     setIsEditingTitle(false);
   };
 
+  const startEditDate = () => {
+    setEditDateValue(meetingDate);
+    setIsEditingDate(true);
+  };
+  const confirmDate = () => {
+    if (!isEditingDate) return;
+    const val = editDateValue.trim();
+    if (val) {
+      setMeetingDate(val);
+      if (id) saveMeetingOverride(id, "date", val);
+    }
+    setIsEditingDate(false);
+  };
+
+  const startEditDuration = () => {
+    setEditDurationValue(meetingDuration);
+    setIsEditingDuration(true);
+  };
+  const confirmDuration = () => {
+    if (!isEditingDuration) return;
+    const val = editDurationValue.trim();
+    if (val) {
+      setMeetingDuration(val);
+      if (id) saveMeetingOverride(id, "duration", val);
+    }
+    setIsEditingDuration(false);
+  };
   const startEditCal = () => {
     setEditCalValue(calendarUrl);
     setIsEditingCal(true);
@@ -372,11 +445,21 @@ Respond ONLY with valid JSON, no markdown.`,
     : safeSegments;
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-6">
+    <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] 2xl:grid-cols-[1fr_320px] 3xl:grid-cols-[1fr_380px] gap-6 2xl:gap-8">
       {/* Main content */}
-      <div className="space-y-6 min-w-0">
-        {/* Header — sticky */}
-        <div className="sticky top-0 z-20 -mx-6 -mt-6 px-6 pt-6 pb-4 bg-background/95 backdrop-blur-sm border-b border-border flex items-start justify-between">
+      <div className="space-y-6 2xl:space-y-8 min-w-0">
+        {/* Breadcrumb + Header — sticky */}
+        <div className="sticky top-0 z-20 -mx-6 -mt-6 px-6 pt-5 pb-4 bg-background/95 backdrop-blur-sm border-b border-border">
+          {/* Breadcrumb */}
+          <nav className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-3">
+            <NavLink to="/" className="hover:text-foreground transition-colors">Dashboard</NavLink>
+            <ChevronRight className="h-3 w-3" />
+            <NavLink to="/meetings" className="hover:text-foreground transition-colors">Meetings</NavLink>
+            <ChevronRight className="h-3 w-3" />
+            <span className="text-foreground font-medium truncate max-w-[200px]">{title}</span>
+          </nav>
+
+          <div className="flex items-start justify-between">
           <div className="flex items-start gap-4">
             <button
               onClick={() => navigate(-1)}
@@ -400,7 +483,7 @@ Respond ONLY with valid JSON, no markdown.`,
                   </form>
                 ) : (
                   <>
-                    <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+                    <h1 onDoubleClick={startEditTitle} className="text-2xl 2xl:text-3xl font-semibold tracking-tight cursor-pointer" title="Double-click to edit">{title}</h1>
                     <button onClick={startEditTitle} className="text-muted-foreground hover:text-foreground transition-colors">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
@@ -432,50 +515,102 @@ Respond ONLY with valid JSON, no markdown.`,
                       </TooltipProvider>
                     )}
                     {seriesMeetings.length > 0 && (
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <button className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
-                            <History className="h-3 w-3" />
-                            Series ({seriesMeetings.length + 1})
-                          </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="start" className="w-72">
-                          {/* Current meeting */}
-                          <div className="px-3 py-2 border-b border-border">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Current</p>
-                            <div className="flex items-center gap-2 mt-1">
-                              <CheckCircle2 className="h-3 w-3 text-success shrink-0" />
-                              <span className="text-xs font-medium truncate">{meeting?.date}</span>
-                              <span className="text-[10px] text-muted-foreground font-mono">{meeting?.duration}</span>
+                      <div className="flex items-center gap-1">
+                        {/* Prev arrow */}
+                        <TooltipProvider delayDuration={200}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                disabled={!prevMeeting}
+                                onClick={() => prevMeeting && navigate(`/meetings/${meetingSlug(prevMeeting.title, prevMeeting.id)}`)}
+                                className={cn(
+                                  "flex h-6 w-6 items-center justify-center rounded border border-border transition-colors",
+                                  prevMeeting ? "text-muted-foreground hover:text-foreground hover:bg-secondary" : "text-muted-foreground/30 cursor-not-allowed"
+                                )}
+                              >
+                                <ChevronLeft className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            {prevMeeting && (
+                              <TooltipContent side="bottom" className="text-xs">
+                                {prevMeeting.date}
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
+                        </TooltipProvider>
+
+                        {/* Series dropdown */}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <button className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors">
+                              <History className="h-3 w-3" />
+                              {currentSeriesIdx >= 0 ? `${currentSeriesIdx + 1}/${sortedSeries.length}` : `Series (${seriesMeetings.length + 1})`}
+                            </button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="start" className="w-72 max-h-80 overflow-y-auto">
+                            <div className="px-3 py-1.5 border-b border-border">
+                              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+                                Series · {sortedSeries.length} meetings
+                              </p>
                             </div>
-                          </div>
-                          <div className="px-3 pt-2 pb-1">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">History</p>
-                          </div>
-                          {seriesMeetings.map((sm) => (
-                            <DropdownMenuItem
-                              key={sm.id}
-                              onClick={() => navigate(`/meetings/${sm.id}`)}
-                              className="flex items-center gap-2.5 px-3 py-2 cursor-pointer"
-                            >
-                              {sm.status === "completed" ? (
-                                <CheckCircle2 className="h-3 w-3 text-success shrink-0" />
-                              ) : sm.status === "transcribing" ? (
-                                <Loader2 className="h-3 w-3 text-info animate-spin shrink-0" />
-                              ) : sm.status === "error" ? (
-                                <AlertCircle className="h-3 w-3 text-destructive shrink-0" />
-                              ) : (
-                                <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
-                              )}
-                              <div className="flex-1 min-w-0">
-                                <span className="text-xs font-mono">{sm.date}</span>
-                              </div>
-                              <span className="text-[10px] text-muted-foreground font-mono">{sm.duration}</span>
-                              <ChevronRight className="h-3 w-3 text-muted-foreground" />
-                            </DropdownMenuItem>
-                          ))}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            {sortedSeries.map((sm) => {
+                              const isCurrent = sm.id === id;
+                              return (
+                                <DropdownMenuItem
+                                  key={sm.id}
+                                  onClick={() => !isCurrent && navigate(`/meetings/${meetingSlug(sm.title, sm.id)}`)}
+                                  className={cn(
+                                    "flex items-center gap-2.5 px-3 py-2 cursor-pointer",
+                                    isCurrent && "bg-primary/10"
+                                  )}
+                                >
+                                  {sm.status === "completed" ? (
+                                    <CheckCircle2 className={cn("h-3 w-3 shrink-0", isCurrent ? "text-primary" : "text-success")} />
+                                  ) : sm.status === "transcribing" ? (
+                                    <Loader2 className="h-3 w-3 text-info animate-spin shrink-0" />
+                                  ) : sm.status === "error" ? (
+                                    <AlertCircle className="h-3 w-3 text-destructive shrink-0" />
+                                  ) : (
+                                    <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
+                                  )}
+                                  <div className="flex-1 min-w-0">
+                                    <span className={cn("text-xs font-mono", isCurrent && "text-primary font-medium")}>{sm.date}</span>
+                                  </div>
+                                  <span className="text-[10px] text-muted-foreground font-mono">{sm.duration}</span>
+                                  {isCurrent ? (
+                                    <span className="text-[9px] text-primary font-medium">current</span>
+                                  ) : (
+                                    <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                                  )}
+                                </DropdownMenuItem>
+                              );
+                            })}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+
+                        {/* Next arrow */}
+                        <TooltipProvider delayDuration={200}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                disabled={!nextMeeting}
+                                onClick={() => nextMeeting && navigate(`/meetings/${meetingSlug(nextMeeting.title, nextMeeting.id)}`)}
+                                className={cn(
+                                  "flex h-6 w-6 items-center justify-center rounded border border-border transition-colors",
+                                  nextMeeting ? "text-muted-foreground hover:text-foreground hover:bg-secondary" : "text-muted-foreground/30 cursor-not-allowed"
+                                )}
+                              >
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              </button>
+                            </TooltipTrigger>
+                            {nextMeeting && (
+                              <TooltipContent side="bottom" className="text-xs">
+                                {nextMeeting.date}
+                              </TooltipContent>
+                            )}
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                     )}
                   </>
                 )}
@@ -485,9 +620,57 @@ Respond ONLY with valid JSON, no markdown.`,
                   <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-mono uppercase text-primary">Audio</span>
                 )}
               </div>
-              <div className="mt-1 flex items-center gap-4 text-sm text-muted-foreground">
-                <span className="font-mono">{meeting.date}</span>
-                <span className="font-mono">{meeting.duration}</span>
+              <div className="mt-1 flex items-center gap-3 text-sm text-muted-foreground">
+                {/* Editable date */}
+                {isEditingDate ? (
+                  <form onSubmit={(e) => { e.preventDefault(); confirmDate(); }} className="flex items-center gap-1">
+                    <Input
+                      value={editDateValue}
+                      onChange={(e) => setEditDateValue(e.target.value)}
+                      className="h-6 w-32 text-xs bg-background font-mono px-1.5"
+                      placeholder="2026-03-12"
+                      autoFocus
+                      onBlur={confirmDate}
+                    />
+                    <button type="submit" className="text-primary"><Check className="h-3 w-3" /></button>
+                    <button type="button" onClick={() => setIsEditingDate(false)} className="text-muted-foreground"><X className="h-3 w-3" /></button>
+                  </form>
+                ) : (
+                  <span
+                    onDoubleClick={startEditDate}
+                    className="font-mono cursor-pointer hover:text-foreground transition-colors"
+                    title="Double-click to edit date"
+                  >
+                    {meetingDate}
+                  </span>
+                )}
+
+                <span className="text-muted-foreground/40">·</span>
+
+                {/* Editable duration */}
+                {isEditingDuration ? (
+                  <form onSubmit={(e) => { e.preventDefault(); confirmDuration(); }} className="flex items-center gap-1">
+                    <Input
+                      value={editDurationValue}
+                      onChange={(e) => setEditDurationValue(e.target.value)}
+                      className="h-6 w-20 text-xs bg-background font-mono px-1.5"
+                      placeholder="1:23:45"
+                      autoFocus
+                      onBlur={confirmDuration}
+                    />
+                    <button type="submit" className="text-primary"><Check className="h-3 w-3" /></button>
+                    <button type="button" onClick={() => setIsEditingDuration(false)} className="text-muted-foreground"><X className="h-3 w-3" /></button>
+                  </form>
+                ) : (
+                  <span
+                    onDoubleClick={startEditDuration}
+                    className="font-mono cursor-pointer hover:text-foreground transition-colors"
+                    title="Double-click to edit duration"
+                  >
+                    {meetingDuration}
+                  </span>
+                )}
+
                 <span className="rounded bg-secondary px-2 py-0.5 text-xs font-mono">{meeting.source}</span>
               </div>
             </div>
@@ -513,7 +696,9 @@ Respond ONLY with valid JSON, no markdown.`,
                   href={calendarUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onDoubleClick={(e) => { e.preventDefault(); startEditCal(); }}
                   className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  title="Double-click to edit"
                 >
                   <Calendar className="h-3.5 w-3.5" />
                   Google Calendar
@@ -553,7 +738,9 @@ Respond ONLY with valid JSON, no markdown.`,
                   href={googleDocUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onDoubleClick={(e) => { e.preventDefault(); startEditDoc(); }}
                   className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                  title="Double-click to edit"
                 >
                   <FileTextIcon className="h-3.5 w-3.5" />
                   Transcript Doc
@@ -572,6 +759,7 @@ Respond ONLY with valid JSON, no markdown.`,
                 Link Google Doc
               </button>
             )}
+          </div>
           </div>
         </div>
 
@@ -616,28 +804,6 @@ Respond ONLY with valid JSON, no markdown.`,
               </div>
             </>
           )}
-          {safeSegments.length > 0 && (
-            <>
-              <div className="h-4 w-px bg-border" />
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={transcriptSearch}
-                  onChange={(e) => setTranscriptSearch(e.target.value)}
-                  placeholder="Search transcript..."
-                  className="h-7 w-48 pl-7 text-xs bg-background"
-                />
-                {transcriptSearch && (
-                  <button
-                    onClick={() => setTranscriptSearch("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-            </>
-          )}
           {totalSegments > 0 && (
             <>
               <div className="h-4 w-px bg-border" />
@@ -673,6 +839,17 @@ Respond ONLY with valid JSON, no markdown.`,
           <ProcessingPipeline
             currentStage={pipelineStage}
             failedStage={meeting.status === "error" ? "transcribing" : undefined}
+            onRetryStage={(stage) => {
+              if (stage === "publishing") {
+                toast.info("Retrying publish to Google Sheets...");
+                // Would call Google Sheets API when backend is wired
+              } else if (stage === "transcribing") {
+                toast.info("Retrying transcription via Scriberr...");
+                // Would call Scriberr API when backend is wired
+              } else {
+                toast.info(`Retrying ${stage}...`);
+              }
+            }}
           />
         </div>
 
@@ -688,9 +865,6 @@ Respond ONLY with valid JSON, no markdown.`,
           />
         </div>
 
-  const [googleDocUrl, setGoogleDocUrl] = useState(overrides.googleDocUrl ?? "");
-  const [isEditingDoc, setIsEditingDoc] = useState(false);
-  const [editDocValue, setEditDocValue] = useState("");
 
         {/* Actions */}
         <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card px-4 py-3">
@@ -725,60 +899,28 @@ Respond ONLY with valid JSON, no markdown.`,
           </div>
         </div>
 
-        {/* Search results count */}
-        {transcriptSearch && (
-          <p className="text-xs text-muted-foreground font-mono">
-            {filteredSegments.length} segment{filteredSegments.length !== 1 ? "s" : ""} matching "{transcriptSearch}"
-          </p>
-        )}
-
         {/* Player */}
         <div className="rounded-lg border border-border/60 bg-card p-4">
           <MeetingPlayer
             title={title}
-            date={`${meeting.date} · ${meeting.duration}`}
+            date={`${meetingDate} · ${meetingDuration}`}
             mediaType={meeting.mediaType}
-            segments={filteredSegments}
+            segments={safeSegments}
             onSpeakerRename={handleSpeakerRename}
             searchQuery={transcriptSearch}
+            onSearchChange={setTranscriptSearch}
+            searchResultCount={transcriptSearch ? filteredSegments.length : undefined}
           />
         </div>
       </div>
 
-      {/* Quick-switch sidebar */}
-      <aside className="hidden xl:block space-y-2">
-        <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
-          All Meetings ({otherMeetings.length})
-        </h2>
-        <div className="space-y-1.5 max-h-[calc(100vh-8rem)] overflow-y-auto pr-1">
-          {otherMeetings.map((m) => (
-            <NavLink
-              key={m.id}
-              to={`/meetings/${m.id}`}
-              className={({ isActive }) =>
-                `block rounded-lg border px-3 py-2.5 transition-colors ${
-                  isActive
-                    ? "border-primary/40 bg-primary/5"
-                    : "border-border bg-card hover:bg-secondary/30"
-                }`
-              }
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <p className="text-sm font-medium text-card-foreground truncate">{m.title}</p>
-                  </div>
-                  <p className="text-[10px] text-muted-foreground font-mono mt-0.5 ml-5.5">
-                    {m.date} · {m.duration}
-                  </p>
-                </div>
-                <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
-              </div>
-            </NavLink>
-          ))}
-        </div>
-      </aside>
+      {/* Sidebar panel */}
+      <MeetingSidebar
+        currentMeetingId={id}
+        allMeetings={allMeetings}
+        seriesMeetings={seriesMeetings}
+        hasSeriesMatches={seriesMeetings.length > 0}
+      />
     </div>
   );
 }

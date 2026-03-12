@@ -3,4 +3,21 @@ services:
     build: .
     ports:
       - "7899:7899"
+    depends_on:
+      - api
     restart: unless-stopped
+
+  api:
+    build: ./server
+    ports:
+      - "3001:3001"
+    volumes:
+      - meetscribe_data:/data
+    environment:
+      - DATA_DIR=/data
+      - PORT=3001
+    restart: unless-stopped
+
+volumes:
+  meetscribe_data:
+    driver: local

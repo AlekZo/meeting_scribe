@@ -16,10 +16,54 @@ interface SpeakerTimelineProps {
   totalDuration: number;
   currentTime: number;
   onSeek: (time: number) => void;
+  meetingDate?: string;
 }
 
-export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek }: SpeakerTimelineProps) {
+/** Parse an ISO-ish date string and return a Date, or undefined */
+function parseMeetingStart(dateStr?: string): Date | undefined {
+  if (!dateStr) return undefined;
+  try {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) return d;
+  } catch {}
+  return undefined;
+}
+
+/** Format seconds offset from a start Date into HH:MM */
+function formatClockTime(start: Date, offsetSec: number): string {
+  const d = new Date(start.getTime() + offsetSec * 1000);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** Format seconds as mm:ss or h:mm:ss */
+function formatElapsed(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Generate evenly-spaced tick positions */
+function generateTicks(totalDuration: number, maxTicks = 6): number[] {
+  if (totalDuration <= 0) return [];
+  const interval = Math.ceil(totalDuration / maxTicks / 60) * 60; // round to nearest minute
+  const ticks: number[] = [0];
+  let t = interval;
+  while (t < totalDuration) {
+    ticks.push(t);
+    t += interval;
+  }
+  if (ticks[ticks.length - 1] < totalDuration - interval * 0.3) {
+    ticks.push(totalDuration);
+  }
+  return ticks;
+}
+
+export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek, meetingDate }: SpeakerTimelineProps) {
   const speakers = useMemo(() => Array.from(new Set(segments.map((s) => s.speaker))), [segments]);
+  const meetingStart = useMemo(() => parseMeetingStart(meetingDate), [meetingDate]);
+  const ticks = useMemo(() => generateTicks(totalDuration), [totalDuration]);
 
   if (segments.length === 0 || totalDuration === 0) return null;
 
@@ -34,7 +78,14 @@ export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek }
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Speaker Timeline</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Speaker Timeline</span>
+          {meetingStart && (
+            <span className="text-[10px] font-mono text-primary/80">
+              {formatClockTime(meetingStart, currentTime)}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           {speakers.map((speaker, i) => (
             <div key={speaker} className="flex items-center gap-1">
@@ -70,6 +121,23 @@ export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek }
           style={{ left: `${playheadPct}%` }}
         />
       </div>
+      {/* Time markers */}
+      {ticks.length > 1 && (
+        <div className="relative h-4">
+          {ticks.map((t) => {
+            const pct = (t / totalDuration) * 100;
+            return (
+              <span
+                key={t}
+                className="absolute text-[9px] font-mono text-muted-foreground -translate-x-1/2"
+                style={{ left: `${Math.min(Math.max(pct, 2), 98)}%` }}
+              >
+                {meetingStart ? formatClockTime(meetingStart, t) : formatElapsed(t)}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

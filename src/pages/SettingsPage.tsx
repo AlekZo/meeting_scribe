@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2 } from "lucide-react";
+import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,7 +18,7 @@ import {
 import { toast } from "sonner";
 import AIModelRoutingSection from "@/components/settings/AIModelRoutingSection";
 import { cn } from "@/lib/utils";
-import { loadSetting, saveSetting } from "@/lib/storage";
+import { loadSetting, saveSetting, downloadBackup, uploadRestore, getServerInfo } from "@/lib/storage";
 import AIPromptsSection from "@/components/settings/AIPromptsSection";
 import OfflineSyncSection from "@/components/settings/OfflineSyncSection";
 import FolderWatchSection from "@/components/settings/FolderWatchSection";
@@ -28,26 +28,114 @@ import ExcelImportSection from "@/components/settings/ExcelImportSection";
 type ConnectionStatus = "untested" | "testing" | "connected" | "error";
 
 export default function SettingsPage() {
-  const [scriberrUrl, setScriberrUrl] = useState("http://localhost:8080");
-  const [apiKey, setApiKey] = useState("");
-  const [autoTranscribe, setAutoTranscribe] = useState(true);
-  const [speakerDetection, setSpeakerDetection] = useState(false);
-  const [tgBotToken, setTgBotToken] = useState("");
-  const [tgChatId, setTgChatId] = useState("");
-  const [tgEnabled, setTgEnabled] = useState(false);
-
+  // ── Scriberr ──
+  const [scriberrUrl, setScriberrUrl] = useState(() => loadSetting("scriberr_url", "http://localhost:8080"));
+  const [apiKey, setApiKey] = useState(() => loadSetting("scriberr_api_key", ""));
   const [scriberrStatus, setScriberrStatus] = useState<ConnectionStatus>("untested");
+
+  // ── Telegram ──
+  const [tgEnabled, setTgEnabled] = useState(() => loadSetting("tg_enabled", false));
+  const [tgBotToken, setTgBotToken] = useState(() => loadSetting("tg_bot_token", ""));
+  const [tgChatId, setTgChatId] = useState(() => loadSetting("tg_chat_id", ""));
   const [tgStatus, setTgStatus] = useState<ConnectionStatus>("untested");
 
+  // ── Processing ──
+  const [autoTranscribe, setAutoTranscribe] = useState(() => loadSetting("auto_transcribe", true));
+  const [speakerDetection, setSpeakerDetection] = useState(() => loadSetting("speaker_detection", false));
+  const [autoRetryOom, setAutoRetryOom] = useState(() => loadSetting("auto_retry_oom", true));
+  const [publishSheets, setPublishSheets] = useState(() => loadSetting("publish_sheets", true));
+
+  // ── Google ──
+  const [googleCalId, setGoogleCalId] = useState(() => loadSetting("google_calendar_id", ""));
+  const [googleSheetsId, setGoogleSheetsId] = useState(() => loadSetting("google_sheets_id", ""));
+  const [googleTab, setGoogleTab] = useState(() => loadSetting("google_tab", "Meeting_Logs"));
+  const [timezone, setTimezone] = useState(() => loadSetting("timezone", "Europe/Moscow"));
+
+  // ── Transcription Engine ──
+  const [whisperModel, setWhisperModel] = useState(() => loadSetting("whisper_model", "large-v3"));
+  const [whisperDevice, setWhisperDevice] = useState(() => loadSetting("whisper_device", "cuda"));
+  const [batchSize, setBatchSize] = useState(() => loadSetting("whisper_batch_size", 4));
+  const [computeType, setComputeType] = useState(() => loadSetting("whisper_compute_type", "float16"));
+  const [beamSize, setBeamSize] = useState(() => loadSetting("whisper_beam_size", 5));
+  const [chunkSize, setChunkSize] = useState(() => loadSetting("whisper_chunk_size", 20));
+  const [diarization, setDiarization] = useState(() => loadSetting("whisper_diarization", true));
+  const [vad, setVad] = useState(() => loadSetting("whisper_vad", true));
+
+  // ── Dirty tracking ──
+  const [saved, setSaved] = useState(true);
+  const markDirty = () => setSaved(false);
+
+  // ── Server info ──
+  const [serverInfo, setServerInfo] = useState<{ available: boolean; dbSize?: number; version?: string } | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  useEffect(() => {
+    getServerInfo().then(setServerInfo);
+  }, []);
+
   const testScriberr = async () => {
+    if (!scriberrUrl) {
+      setScriberrStatus("error");
+      toast.error("Scriberr URL is empty");
+      return;
+    }
     setScriberrStatus("testing");
-    // Simulated test
-    setTimeout(() => setScriberrStatus(scriberrUrl ? "connected" : "error"), 1500);
+    try {
+      const base = scriberrUrl.replace(/\/+$/, "");
+      const res = await fetch(`${base}/health`, {
+        method: "GET",
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        setScriberrStatus("connected");
+        toast.success("Scriberr is healthy");
+      } else {
+        setScriberrStatus("error");
+        toast.error(`Scriberr returned ${res.status}`);
+      }
+    } catch (err: any) {
+      setScriberrStatus("error");
+      toast.error(err?.name === "TimeoutError" ? "Connection timed out" : `Cannot reach Scriberr: ${err.message}`);
+    }
   };
 
   const testTelegram = async () => {
     setTgStatus("testing");
     setTimeout(() => setTgStatus(tgBotToken ? "connected" : "error"), 1500);
+  };
+
+  const handleSave = () => {
+    // Scriberr
+    saveSetting("scriberr_url", scriberrUrl);
+    saveSetting("scriberr_api_key", apiKey);
+    // Telegram
+    saveSetting("tg_enabled", tgEnabled);
+    saveSetting("tg_bot_token", tgBotToken);
+    saveSetting("tg_chat_id", tgChatId);
+    // Processing
+    saveSetting("auto_transcribe", autoTranscribe);
+    saveSetting("speaker_detection", speakerDetection);
+    saveSetting("auto_retry_oom", autoRetryOom);
+    saveSetting("publish_sheets", publishSheets);
+    // Google
+    saveSetting("google_calendar_id", googleCalId);
+    saveSetting("google_sheets_id", googleSheetsId);
+    saveSetting("google_tab", googleTab);
+    saveSetting("timezone", timezone);
+    // Transcription Engine
+    saveSetting("whisper_model", whisperModel);
+    saveSetting("whisper_device", whisperDevice);
+    saveSetting("whisper_batch_size", batchSize);
+    saveSetting("whisper_compute_type", computeType);
+    saveSetting("whisper_beam_size", beamSize);
+    saveSetting("whisper_chunk_size", chunkSize);
+    saveSetting("whisper_diarization", diarization);
+    saveSetting("whisper_vad", vad);
+
+    setSaved(true);
+    toast.success("Settings saved");
   };
 
   const StatusBadge = ({ status }: { status: ConnectionStatus }) => {
@@ -57,10 +145,13 @@ export default function SettingsPage() {
     return <XCircle className="h-3.5 w-3.5 text-destructive" />;
   };
 
+  // Helper to update state + mark dirty
+  const set = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); markDirty(); };
+
   return (
-    <div className="space-y-8 max-w-2xl">
+    <div className="space-y-8 2xl:space-y-10 max-w-2xl 2xl:max-w-3xl 3xl:max-w-4xl">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <h1 className="text-2xl 2xl:text-3xl 3xl:text-4xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Configure integrations and preferences
         </p>
@@ -81,11 +172,11 @@ export default function SettingsPage() {
         <div className="space-y-3">
           <div>
             <Label className="text-xs text-muted-foreground">Base URL</Label>
-            <Input value={scriberrUrl} onChange={(e) => setScriberrUrl(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="http://localhost:8080" />
+            <Input value={scriberrUrl} onChange={(e) => set(setScriberrUrl)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="http://localhost:8080" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">API Key</Label>
-            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="Enter API key" />
+            <Input type="password" value={apiKey} onChange={(e) => set(setApiKey)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="Enter API key" />
           </div>
           <Button variant="outline" size="sm" onClick={testScriberr} className="gap-1.5 text-xs">
             Test Connection
@@ -101,7 +192,7 @@ export default function SettingsPage() {
             <h2 className="text-base font-medium">Telegram Bot</h2>
             <StatusBadge status={tgStatus} />
           </div>
-          <Switch checked={tgEnabled} onCheckedChange={setTgEnabled} />
+          <Switch checked={tgEnabled} onCheckedChange={set(setTgEnabled)} />
         </div>
         <p className="text-xs text-muted-foreground">
           Receive voice messages and audio files. Get interactive notifications for meeting selection, speaker renaming, and transcription status.
@@ -113,7 +204,7 @@ export default function SettingsPage() {
               <Input
                 type="password"
                 value={tgBotToken}
-                onChange={(e) => setTgBotToken(e.target.value)}
+                onChange={(e) => set(setTgBotToken)(e.target.value)}
                 className="mt-1 bg-background font-mono text-sm"
                 placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
               />
@@ -128,7 +219,7 @@ export default function SettingsPage() {
               <Label className="text-xs text-muted-foreground">Allowed Chat IDs</Label>
               <Input
                 value={tgChatId}
-                onChange={(e) => setTgChatId(e.target.value)}
+                onChange={(e) => set(setTgChatId)(e.target.value)}
                 className="mt-1 bg-background font-mono text-sm"
                 placeholder="Comma-separated chat IDs"
               />
@@ -155,28 +246,28 @@ export default function SettingsPage() {
               <p className="text-sm font-medium">Auto-transcribe on upload</p>
               <p className="text-xs text-muted-foreground">Automatically start transcription when files are uploaded</p>
             </div>
-            <Switch checked={autoTranscribe} onCheckedChange={setAutoTranscribe} />
+            <Switch checked={autoTranscribe} onCheckedChange={set(setAutoTranscribe)} />
           </div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">AI Speaker Detection</p>
               <p className="text-xs text-muted-foreground">Use OpenRouter to identify and label speakers after transcription</p>
             </div>
-            <Switch checked={speakerDetection} onCheckedChange={setSpeakerDetection} />
+            <Switch checked={speakerDetection} onCheckedChange={set(setSpeakerDetection)} />
           </div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Auto-retry on GPU OOM</p>
               <p className="text-xs text-muted-foreground">Automatically retry on CPU if GPU runs out of memory</p>
             </div>
-            <Switch defaultChecked />
+            <Switch checked={autoRetryOom} onCheckedChange={set(setAutoRetryOom)} />
           </div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">Publish to Google Sheets</p>
               <p className="text-xs text-muted-foreground">Automatically log completed meetings to Google Sheets</p>
             </div>
-            <Switch defaultChecked />
+            <Switch checked={publishSheets} onCheckedChange={set(setPublishSheets)} />
           </div>
         </div>
       </section>
@@ -187,21 +278,22 @@ export default function SettingsPage() {
         <div className="space-y-3">
           <div>
             <Label className="text-xs text-muted-foreground">Google Calendar ID</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" placeholder="primary" />
+            <Input value={googleCalId} onChange={(e) => set(setGoogleCalId)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="primary" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Google Sheets ID</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" placeholder="Spreadsheet ID for meeting logs" />
+            <Input value={googleSheetsId} onChange={(e) => set(setGoogleSheetsId)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="Spreadsheet ID for meeting logs" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Meeting Logs Tab</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" placeholder="Meeting_Logs" defaultValue="Meeting_Logs" />
+            <Input value={googleTab} onChange={(e) => set(setGoogleTab)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="Meeting_Logs" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Timezone</Label>
             <select
+              value={timezone}
+              onChange={(e) => set(setTimezone)(e.target.value)}
               className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
-              defaultValue="Europe/Moscow"
             >
               <option value="Pacific/Midway">(UTC-11:00) Midway</option>
               <option value="Pacific/Honolulu">(UTC-10:00) Honolulu</option>
@@ -251,7 +343,11 @@ export default function SettingsPage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <Label className="text-xs text-muted-foreground">Model</Label>
-            <select className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none">
+            <select
+              value={whisperModel}
+              onChange={(e) => set(setWhisperModel)(e.target.value)}
+              className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
+            >
               <option>large-v3</option>
               <option>large-v2</option>
               <option>medium</option>
@@ -262,18 +358,26 @@ export default function SettingsPage() {
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Device</Label>
-            <select className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none">
+            <select
+              value={whisperDevice}
+              onChange={(e) => set(setWhisperDevice)(e.target.value)}
+              className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
+            >
               <option value="cuda">CUDA (GPU)</option>
               <option value="cpu">CPU</option>
             </select>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Batch Size</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" type="number" defaultValue="4" />
+            <Input value={batchSize} onChange={(e) => set(setBatchSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Compute Type</Label>
-            <select className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none">
+            <select
+              value={computeType}
+              onChange={(e) => set(setComputeType)(e.target.value)}
+              className="mt-1 w-full h-9 rounded-md border border-input bg-background px-3 text-sm font-mono focus:ring-1 focus:ring-ring outline-none"
+            >
               <option value="float16">float16</option>
               <option value="int8">int8</option>
               <option value="float32">float32</option>
@@ -281,11 +385,11 @@ export default function SettingsPage() {
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Beam Size</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" type="number" defaultValue="5" />
+            <Input value={beamSize} onChange={(e) => set(setBeamSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Chunk Size</Label>
-            <Input className="mt-1 bg-background font-mono text-sm" type="number" defaultValue="20" />
+            <Input value={chunkSize} onChange={(e) => set(setChunkSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
           </div>
         </div>
         <div className="space-y-3 pt-2">
@@ -294,22 +398,124 @@ export default function SettingsPage() {
               <p className="text-sm font-medium">Speaker Diarization</p>
               <p className="text-xs text-muted-foreground">Use pyannote for speaker separation</p>
             </div>
-            <Switch defaultChecked />
+            <Switch checked={diarization} onCheckedChange={set(setDiarization)} />
           </div>
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium">VAD (Voice Activity Detection)</p>
               <p className="text-xs text-muted-foreground">Use pyannote VAD for better segmentation</p>
             </div>
-            <Switch defaultChecked />
+            <Switch checked={vad} onCheckedChange={set(setVad)} />
           </div>
         </div>
       </section>
 
-      <div className="flex items-center justify-between">
-        <Button className="gap-2">
+      {/* Data & Backup */}
+      <section className="space-y-4 rounded-lg border border-border bg-card p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Database className="h-4 w-4 text-primary" />
+            <h2 className="text-base font-medium">Data & Backup</h2>
+          </div>
+          {serverInfo && (
+            <div className="flex items-center gap-2">
+              <Server className="h-3.5 w-3.5 text-muted-foreground" />
+              <span className={cn(
+                "text-[11px] font-mono",
+                serverInfo.available ? "text-success" : "text-muted-foreground"
+              )}>
+                {serverInfo.available ? "Server connected" : "Server offline — localStorage only"}
+              </span>
+              {serverInfo.available && serverInfo.dbSize && (
+                <span className="text-[10px] font-mono text-muted-foreground">
+                  ({(serverInfo.dbSize / 1024).toFixed(0)} KB)
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {serverInfo?.available
+            ? "Data is stored on the server (SQLite) and synced to your browser. Download a backup before app updates or server migration."
+            : "Server API not detected. Data is stored in your browser's localStorage only. Deploy with Docker to enable server-side persistence."}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2"
+            disabled={isBackingUp}
+            onClick={async () => {
+              setIsBackingUp(true);
+              try {
+                await downloadBackup();
+                toast.success(serverInfo?.available
+                  ? "Backup downloaded (ZIP with separate files)"
+                  : "Backup downloaded (JSON)");
+              } catch (e: any) {
+                toast.error(e.message || "Backup failed");
+              } finally {
+                setIsBackingUp(false);
+              }
+            }}
+          >
+            {isBackingUp ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+            Download Backup
+          </Button>
+
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              disabled={isRestoring}
+              onClick={() => document.getElementById("restore-input")?.click()}
+            >
+              {isRestoring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+              Restore from Backup
+            </Button>
+            <input
+              id="restore-input"
+              type="file"
+              accept=".zip,.json"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                setIsRestoring(true);
+                try {
+                  const result = await uploadRestore(file);
+                  toast.success(`Restored ${result.restoredKeys} data entries. Reloading...`);
+                  setTimeout(() => window.location.reload(), 1000);
+                } catch (err: any) {
+                  toast.error(err.message || "Restore failed");
+                } finally {
+                  setIsRestoring(false);
+                  e.target.value = "";
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        <div className="rounded-md bg-secondary/30 px-3 py-2 mt-2">
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            <strong className="text-foreground">Migration guide:</strong> To move data to a new server,
+            download a backup → deploy new instance → restore from backup.
+            {serverInfo?.available && " The backup ZIP contains individual meeting, transcript, and override files plus a raw SQLite DB copy."}
+          </p>
+        </div>
+      </section>
+
+      {/* Save & Clear */}
+      <div className="flex items-center justify-between sticky bottom-4 bg-background/95 backdrop-blur-sm rounded-lg border border-border px-4 py-3">
+        <Button onClick={handleSave} className="gap-2">
           <Save className="h-4 w-4" />
           Save Settings
+          {!saved && (
+            <span className="ml-1 h-2 w-2 rounded-full bg-warning animate-pulse" />
+          )}
         </Button>
 
         <AlertDialog>
@@ -323,7 +529,7 @@ export default function SettingsPage() {
             <AlertDialogHeader>
               <AlertDialogTitle>Clear all application data?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will permanently delete all meetings, transcripts, settings, auto-tagging rules, AI usage history, and activity logs from local storage. This action cannot be undone.
+                This will permanently delete all meetings, transcripts, settings, auto-tagging rules, AI usage history, and activity logs. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

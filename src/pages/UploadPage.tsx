@@ -66,9 +66,9 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 2xl:space-y-10">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Upload</h1>
+        <h1 className="text-2xl 2xl:text-3xl 3xl:text-4xl font-semibold tracking-tight">Upload</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Upload audio or video files for transcription
         </p>

@@ -24,9 +24,9 @@ export default function ActivityPage() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 2xl:space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Activity Log</h1>
+        <h1 className="text-2xl 2xl:text-3xl 3xl:text-4xl font-semibold tracking-tight">Activity Log</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Full processing history — uploads, transcriptions, renames, notifications
         </p>

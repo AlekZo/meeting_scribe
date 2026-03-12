@@ -13,6 +13,8 @@ import {
   Video,
   Music,
   ChevronsDown,
+  Search,
+  X,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -33,6 +35,8 @@ interface MeetingPlayerProps {
   segments: TranscriptSegment[];
   onSpeakerRename?: (oldName: string, newName: string) => void;
   searchQuery?: string;
+  onSearchChange?: (query: string) => void;
+  searchResultCount?: number;
 }
 
 function HighlightedText({ text, query }: { text: string; query?: string }) {
@@ -73,7 +77,7 @@ function formatTime(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename, searchQuery }: MeetingPlayerProps) {
+export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename, searchQuery, onSearchChange, searchResultCount }: MeetingPlayerProps) {
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const activeSegmentRef = useRef<HTMLDivElement>(null);
@@ -152,6 +156,40 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     if (isPlaying) mediaRef.current.pause();
     else mediaRef.current.play();
   };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Don't capture when typing in inputs
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          togglePlay();
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          seekTo(Math.max(0, currentTime - 5));
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          seekTo(Math.min(duration, currentTime + 5));
+          break;
+        case "m":
+        case "M":
+          setIsMuted((prev) => {
+            const next = !prev;
+            if (mediaRef.current) mediaRef.current.muted = next;
+            return next;
+          });
+          break;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  });
 
   // Demo playback — use wall-clock time to prevent drift
   const demoDuration = segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 60;
@@ -232,7 +270,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const isVideo = mediaType === "video";
 
   return (
-    <div className="flex flex-col rounded-lg border border-border bg-card overflow-hidden">
+    <div className="flex flex-col rounded-lg border border-border bg-card overflow-hidden" tabIndex={0} role="region" aria-label="Media player">
       {/* Video area */}
       {isVideo && (
         <div className="relative aspect-video bg-background flex items-center justify-center">
@@ -310,31 +348,64 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           totalDuration={totalDuration}
           currentTime={displayTime}
           onSeek={seekTo}
+          meetingDate={date}
         />
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">
-            <button onClick={() => skip(-10)} className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => skip(-10)} title="Rewind 10s (←)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
               <SkipBack className="h-4 w-4" />
             </button>
-            <button onClick={togglePlay} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+            <button onClick={togglePlay} title={isPlaying ? "Pause (Space)" : "Play (Space)"} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
               {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
             </button>
-            <button onClick={() => skip(10)} className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => skip(10)} title="Forward 10s (→)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
               <SkipForward className="h-4 w-4" />
             </button>
+            <span className="hidden lg:inline text-[9px] text-muted-foreground/50 font-mono ml-1">Space · ← → · M</span>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button onClick={() => {
-              const next = !isMuted;
-              setIsMuted(next);
-              if (mediaRef.current) mediaRef.current.muted = next;
-            }} className="text-muted-foreground hover:text-foreground transition-colors">
-              {isMuted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-            </button>
-            <div className="w-20">
-              <Slider value={[isMuted ? 0 : volume]} max={100} step={1} onValueChange={handleVolume} />
+          <div className="flex items-center gap-3">
+            {/* Transcript search */}
+            {onSearchChange && segments.length > 0 && (
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={searchQuery ?? ""}
+                    onChange={(e) => onSearchChange(e.target.value)}
+                    placeholder="Search transcript..."
+                    className="h-7 w-40 pl-7 pr-7 text-[11px] bg-background"
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={() => onSearchChange("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  )}
+                </div>
+                {searchResultCount !== undefined && searchQuery && (
+                  <span className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
+                    {searchResultCount} found
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Volume */}
+            <div className="flex items-center gap-2">
+              <button onClick={() => {
+                const next = !isMuted;
+                setIsMuted(next);
+                if (mediaRef.current) mediaRef.current.muted = next;
+              }} className="text-muted-foreground hover:text-foreground transition-colors">
+                {isMuted || volume === 0 ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              </button>
+              <div className="w-20">
+                <Slider value={[isMuted ? 0 : volume]} max={100} step={1} onValueChange={handleVolume} />
+              </div>
             </div>
           </div>
         </div>
@@ -366,7 +437,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
                   </form>
                 ) : (
                   <>
-                    <span className={cn("text-xs font-medium", colors.text)}>{speaker}</span>
+                    <span onDoubleClick={() => startRename(speaker)} className={cn("text-xs font-medium cursor-pointer", colors.text)} title="Double-click to rename">{speaker}</span>
                     <button onClick={() => startRename(speaker)} className="text-muted-foreground hover:text-foreground transition-colors">
                       <Pencil className="h-2.5 w-2.5" />
                     </button>
@@ -393,7 +464,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
         <div
           ref={transcriptRef}
           onScroll={isPlaying ? handleTranscriptScroll : undefined}
-          className="max-h-[420px] overflow-y-auto scroll-smooth"
+          className="max-h-[420px] 2xl:max-h-[560px] 3xl:max-h-[720px] overflow-y-auto scroll-smooth"
         >
           {segments.length === 0 && (
             <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
