@@ -1,97 +1,202 @@
-# Welcome to your Lovable project
+# MeetScribe
 
-## Project info
+Self-hosted meeting transcription manager with Scriberr (Whisper) integration, activity logging, and hybrid local/server persistence.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+## Features
 
-## How can I edit this code?
+- 🎙️ **Transcription** — Upload audio/video and transcribe via Scriberr (Whisper)
+- 📊 **Dashboard** — Overview of meetings, stats, and recent activity
+- 📝 **Meeting Management** — Edit titles, summaries, tags, speakers, and categories
+- 📅 **Google Calendar & Docs** — Link meetings to calendar events and external transcripts
+- 📥 **Excel Import** — Bulk-import meetings from `.xlsx` / `.csv` files
+- 💾 **Backup & Restore** — Full zip backup/restore of all data
+- 🔄 **Hybrid Storage** — localStorage for speed + SQLite server for persistence
+- 🐳 **Docker-ready** — Single `docker compose up` to run everything
 
-There are several ways of editing your application.
+## Tech Stack
 
-**Use Lovable**
+- **Frontend:** React, TypeScript, Vite, Tailwind CSS, shadcn/ui
+- **Backend:** Node.js, Express, better-sqlite3
+- **Proxy:** Nginx (serves frontend + proxies API & Scriberr)
+- **Deployment:** Docker Compose
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+---
 
-Changes made via Lovable will be committed automatically to this repo.
+## 🐳 Docker Deployment (Recommended)
 
-**Use your preferred IDE**
+### Prerequisites
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+- [Docker](https://docs.docker.com/get-docker/) (v20+)
+- [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+### Quick Start
 
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
+```bash
+# 1. Clone the repository
 git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
 cd <YOUR_PROJECT_NAME>
 
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
-```
-
-**Edit a file directly in GitHub**
-
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
-
-**Use GitHub Codespaces**
-
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
-
-## What technologies are used for this project?
-
-This project is built with:
-
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## Running with Docker
-
-```sh
-# Build images
-docker compose build
-
-# Start all services (frontend + API)
-docker compose up -d
-
-# Or build and start in one command
+# 2. Build and start all services
 docker compose up -d --build
 
-# Frontend will be available at http://localhost:7899
-# API will be available at http://localhost:3001
-
-# View logs
-docker compose logs -f
-
-# Stop all services
-docker compose down
+# 3. Open in browser
+open http://localhost:7899
 ```
 
-Data is persisted in the `meetscribe_data` Docker volume.
+That's it! The app is now running with:
+- **Frontend + Nginx proxy** on port `7899`
+- **API server + SQLite** on port `3001` (proxied through Nginx)
+- **Persistent data** stored in the `meetscribe_data` Docker volume
 
-## How can I deploy this project?
+### Architecture
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+```
+┌─────────────────────────────────────────────┐
+│              Docker Compose                 │
+│                                             │
+│  ┌──────────────────────┐                   │
+│  │   meetscribe (Nginx) │ ◄── :7899         │
+│  │   - Serves frontend  │                   │
+│  │   - Proxies /api/*   │──► api:3001       │
+│  │   - Proxies /scriberr│──► host:8080      │
+│  └──────────────────────┘                   │
+│                                             │
+│  ┌──────────────────────┐                   │
+│  │   api (Node.js)      │ ◄── :3001        │
+│  │   - Express + SQLite │                   │
+│  │   - /data volume     │──► meetscribe_data│
+│  └──────────────────────┘                   │
+└─────────────────────────────────────────────┘
+         │
+         ▼ (host.docker.internal)
+┌──────────────────┐
+│  Scriberr :8080  │  ◄── Your existing Scriberr instance
+└──────────────────┘
+```
 
-## Can I connect a custom domain to my Lovable project?
+### Common Commands
 
-Yes, you can!
+```bash
+# Start services
+docker compose up -d
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+# Stop services
+docker compose down
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+# View logs (follow mode)
+docker compose logs -f
+
+# View logs for a specific service
+docker compose logs -f api
+docker compose logs -f meetscribe
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Full reset (removes data volume!)
+docker compose down -v
+```
+
+### Data Persistence
+
+All data is stored in a Docker volume named `meetscribe_data`, which persists across container restarts and rebuilds.
+
+```bash
+# Inspect the volume
+docker volume inspect meetscribe_data
+
+# Backup the volume
+docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
+  tar czf /backup/meetscribe-data-backup.tar.gz -C /data .
+
+# Restore from backup
+docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
+  sh -c "cd /data && tar xzf /backup/meetscribe-data-backup.tar.gz"
+```
+
+You can also use the in-app **Backup & Restore** feature in Settings to download/upload a zip of all meetings, transcripts, and settings.
+
+### Scriberr Integration
+
+MeetScribe connects to your existing [Scriberr](https://github.com/JamesCodesStuff/Scriberr) instance for audio/video transcription.
+
+1. Make sure Scriberr is running on the same host (default: `http://localhost:8080`)
+2. In MeetScribe **Settings**, configure:
+   - **Scriberr URL** — e.g., `http://localhost:8080` (auto-proxied via Nginx)
+   - **API Key** — your Scriberr API key
+   - **Auth Method** — toggle between `X-API-Key` or `Bearer` token
+3. Click **Test Connection** to verify
+
+> **Note:** The Nginx proxy routes `/scriberr/*` requests to `host.docker.internal:8080`. If your Scriberr runs on a different port, update the `nginx.conf` file.
+
+### Environment Variables
+
+| Variable | Service | Default | Description |
+|----------|---------|---------|-------------|
+| `DATA_DIR` | api | `/data` | SQLite database directory |
+| `PORT` | api | `3001` | API server port |
+
+### Customizing Ports
+
+Edit `docker-compose.yml` to change exposed ports:
+
+```yaml
+services:
+  meetscribe:
+    ports:
+      - "8080:7899"   # Change 8080 to your desired frontend port
+  api:
+    ports:
+      - "4000:3001"   # Change 4000 to your desired API port
+```
+
+If you change the Scriberr proxy port, also update `nginx.conf`:
+
+```nginx
+location /scriberr/ {
+    proxy_pass http://host.docker.internal:YOUR_SCRIBERR_PORT/;
+}
+```
+
+---
+
+## 💻 Local Development
+
+### Prerequisites
+
+- Node.js 18+ ([install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating))
+
+### Setup
+
+```bash
+# Install dependencies
+npm install
+
+# Start dev server (frontend only, uses localStorage)
+npm run dev
+
+# Optional: start the API server for full persistence
+cd server && npm install && node index.mjs
+```
+
+The dev server runs at `http://localhost:5173` with hot reloading.
+
+---
+
+## Project Structure
+
+```
+├── src/                  # React frontend
+│   ├── components/       # UI components
+│   ├── pages/            # Route pages
+│   ├── lib/              # Utilities (storage, scriberr, auto-tagger)
+│   ├── data/             # Type definitions & mock data
+│   └── hooks/            # Custom React hooks
+├── server/               # Express API server
+│   └── index.mjs         # SQLite-backed key-value store
+├── nginx.conf            # Nginx proxy config
+├── Dockerfile            # Frontend multi-stage build
+├── server/Dockerfile     # API server build
+├── docker-compose.yml    # Full stack orchestration
+└── docs/                 # API documentation
+```

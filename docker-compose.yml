@@ -4,8 +4,12 @@ services:
     build: .
     ports:
       - "7899:7899"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - api
+    networks:
+      - meetscribe-net
     restart: unless-stopped
 
   api:
@@ -18,7 +22,14 @@ services:
     environment:
       - DATA_DIR=/data
       - PORT=3001
+    networks:
+      - meetscribe-net
     restart: unless-stopped
+
+networks:
+  meetscribe-net:
+    name: meetscribe-net
+    driver: bridge
 
 volumes:
   meetscribe_data:

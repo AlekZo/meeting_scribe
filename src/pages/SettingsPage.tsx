@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server } from "lucide-react";
+import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server, Lock, Unlock } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,7 +30,9 @@ type ConnectionStatus = "untested" | "testing" | "connected" | "error";
 export default function SettingsPage() {
   // ── Scriberr ──
   const [scriberrUrl, setScriberrUrl] = useState(() => loadSetting("scriberr_url", ""));
-  const [apiKey, setApiKey] = useState(() => loadSetting("scriberr_api_key", "4JXrgIJmCECYRkvGbhySgP6ncQm66XRV"));
+  const [scriberrProtocol, setScriberrProtocol] = useState<"http" | "https">(() => loadSetting("scriberr_protocol", "http"));
+  const [apiKey, setApiKey] = useState(() => loadSetting("scriberr_api_key", ""));
+  const [authMethod, setAuthMethod] = useState<"x-api-key" | "bearer">(() => loadSetting("scriberr_auth_method", "x-api-key"));
   const [scriberrStatus, setScriberrStatus] = useState<ConnectionStatus>("untested");
 
   // ── Telegram ──
@@ -82,11 +84,18 @@ export default function SettingsPage() {
     }
     setScriberrStatus("testing");
     try {
-      // Use proxy if no custom URL is set
-      const base = scriberrUrl ? scriberrUrl.replace(/\/+$/, "") : "/scriberr";
-      const res = await fetch(`${base}/api/v1/transcription/list?page=1&limit=1`, {
+      const base = `${scriberrProtocol}://${scriberrUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+      const h: Record<string, string> = {};
+      if (apiKey) {
+        if (authMethod === "bearer") {
+          h["Authorization"] = `Bearer ${apiKey}`;
+        } else {
+          h["X-API-Key"] = apiKey;
+        }
+      }
+      const res = await fetch(`${base}/api/v1/health`, {
         method: "GET",
-        headers: apiKey ? { "X-API-Key": apiKey } : {},
+        headers: h,
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
@@ -110,7 +119,9 @@ export default function SettingsPage() {
   const handleSave = () => {
     // Scriberr
     saveSetting("scriberr_url", scriberrUrl);
+    saveSetting("scriberr_protocol", scriberrProtocol);
     saveSetting("scriberr_api_key", apiKey);
+    saveSetting("scriberr_auth_method", authMethod);
     // Telegram
     saveSetting("tg_enabled", tgEnabled);
     saveSetting("tg_bot_token", tgBotToken);
@@ -173,11 +184,51 @@ export default function SettingsPage() {
         <div className="space-y-3">
           <div>
             <Label className="text-xs text-muted-foreground">Base URL</Label>
-            <Input value={scriberrUrl} onChange={(e) => set(setScriberrUrl)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="http://localhost:8080" />
+            <div className="flex items-center gap-0 mt-1">
+              <button
+                type="button"
+                onClick={() => { const next = scriberrProtocol === "http" ? "https" : "http"; setScriberrProtocol(next); markDirty(); }}
+                className={cn(
+                  "flex items-center gap-1 rounded-l-md border border-r-0 px-2.5 py-2 text-xs font-mono transition-colors shrink-0",
+                  scriberrProtocol === "https"
+                    ? "bg-success/10 border-success/30 text-success"
+                    : "bg-muted border-border text-muted-foreground hover:text-foreground"
+                )}
+                title={scriberrProtocol === "https" ? "Using HTTPS (secure)" : "Using HTTP (insecure)"}
+              >
+                {scriberrProtocol === "https" ? <Lock className="h-3 w-3" /> : <Unlock className="h-3 w-3" />}
+                {scriberrProtocol}://
+              </button>
+              <Input
+                value={scriberrUrl}
+                onChange={(e) => set(setScriberrUrl)(e.target.value)}
+                className="rounded-l-none bg-background font-mono text-sm"
+                placeholder="localhost:8080"
+              />
+            </div>
           </div>
           <div>
-            <Label className="text-xs text-muted-foreground">API Key</Label>
-            <Input type="password" value={apiKey} onChange={(e) => set(setApiKey)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="Enter API key" />
+            <Label className="text-xs text-muted-foreground">Authentication</Label>
+            <div className="flex items-center gap-0 mt-1">
+              <button
+                type="button"
+                onClick={() => { const next = authMethod === "x-api-key" ? "bearer" : "x-api-key"; setAuthMethod(next); markDirty(); }}
+                className={cn(
+                  "rounded-l-md border border-r-0 px-2.5 py-2 text-xs font-mono transition-colors shrink-0",
+                  "bg-muted border-border text-muted-foreground hover:text-foreground"
+                )}
+                title={authMethod === "x-api-key" ? "Using X-API-Key header" : "Using Bearer token"}
+              >
+                {authMethod === "x-api-key" ? "X-API-Key" : "Bearer"}
+              </button>
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => set(setApiKey)(e.target.value)}
+                className="rounded-l-none bg-background font-mono text-sm"
+                placeholder="Enter API key"
+              />
+            </div>
           </div>
           <Button variant="outline" size="sm" onClick={testScriberr} className="gap-1.5 text-xs">
             Test Connection
@@ -538,9 +589,25 @@ export default function SettingsPage() {
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 onClick={() => {
+                  // Preserve Excel-imported meetings (IDs start with "import_")
+                  const meetingsRaw = localStorage.getItem("meetscribe_meetings");
+                  let excelMeetings: any[] = [];
+                  if (meetingsRaw) {
+                    try {
+                      const all = JSON.parse(meetingsRaw);
+                      excelMeetings = Array.isArray(all) ? all.filter((m: any) => m.id?.startsWith("import_")) : [];
+                    } catch {}
+                  }
+
                   const keys = Object.keys(localStorage).filter((k) => k.startsWith("meetscribe_"));
                   keys.forEach((k) => localStorage.removeItem(k));
-                  toast.success(`Cleared ${keys.length} stored items`);
+
+                  // Restore Excel-imported meetings
+                  if (excelMeetings.length > 0) {
+                    localStorage.setItem("meetscribe_meetings", JSON.stringify(excelMeetings));
+                  }
+
+                  toast.success(`Cleared data. Preserved ${excelMeetings.length} Excel-imported meetings.`);
                   setTimeout(() => window.location.reload(), 500);
                 }}
               >

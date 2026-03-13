@@ -5,16 +5,26 @@ import { loadSetting } from "@/lib/storage";
 import type { TranscriptSegment } from "@/components/MeetingPlayer";
 
 function getConfig() {
-  // Check if user set a custom URL, otherwise use the nginx proxy
-  const storedUrl = loadSetting<string>("scriberr_url", "");
-  const baseUrl = storedUrl ? storedUrl.replace(/\/+$/, "") : "/scriberr";
+  const customUrl = loadSetting<string>("scriberr_url", "");
+  const protocol = loadSetting<string>("scriberr_protocol", "http");
+  // If no custom URL is set, use the nginx proxy path (works in Docker)
+  const baseUrl = customUrl
+    ? `${protocol}://${customUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`
+    : `${window.location.origin}/scriberr`;
   const apiKey = loadSetting<string>("scriberr_api_key", "");
   return { baseUrl, apiKey };
 }
 
 function headers(apiKey: string, json = false): Record<string, string> {
+  const authMethod = loadSetting<string>("scriberr_auth_method", "x-api-key");
   const h: Record<string, string> = {};
-  if (apiKey) h["X-API-Key"] = apiKey;
+  if (apiKey) {
+    if (authMethod === "bearer") {
+      h["Authorization"] = `Bearer ${apiKey}`;
+    } else {
+      h["X-API-Key"] = apiKey;
+    }
+  }
   if (json) h["Content-Type"] = "application/json";
   return h;
 }

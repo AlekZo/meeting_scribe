@@ -16,11 +16,13 @@ import {
   ChevronUp,
   User,
   Sparkles,
-  Loader2,
+  X,
   Copy,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getModelForTask, getModelCatalog } from "@/lib/openrouter";
+import { Skeleton } from "@/components/ui/skeleton";
+import ReactMarkdown from "react-markdown";
 
 interface MeetingSummaryProps {
   summary?: string;
@@ -28,7 +30,14 @@ interface MeetingSummaryProps {
   onToggleAction?: (id: string, done: boolean) => void;
   hasTranscript?: boolean;
   onGenerate?: () => void;
+  onCancelGenerate?: () => void;
   isGenerating?: boolean;
+}
+
+function copyToClipboard(text: string, successMsg: string) {
+  navigator.clipboard.writeText(text)
+    .then(() => toast.success(successMsg))
+    .catch(() => toast.error("Failed to copy to clipboard"));
 }
 
 export function MeetingSummary({
@@ -37,6 +46,7 @@ export function MeetingSummary({
   onToggleAction,
   hasTranscript,
   onGenerate,
+  onCancelGenerate,
   isGenerating,
 }: MeetingSummaryProps) {
   const [expanded, setExpanded] = useState(true);
@@ -50,7 +60,7 @@ export function MeetingSummary({
 
   const hasSummary = !!summary;
   const hasActions = actionItems && actionItems.length > 0;
-  const isEmpty = !hasSummary && !hasActions;
+  const isEmpty = !hasSummary && !hasActions && !isGenerating;
 
   const completedCount = actionItems?.filter((a) => a.done).length ?? 0;
   const totalCount = actionItems?.length ?? 0;
@@ -86,15 +96,20 @@ export function MeetingSummary({
                   variant="outline"
                   size="sm"
                   className="gap-1.5 text-xs"
-                  onClick={onGenerate}
-                  disabled={isGenerating}
+                  onClick={isGenerating ? onCancelGenerate : onGenerate}
+                  disabled={!isGenerating && !onGenerate}
                 >
                   {isGenerating ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <>
+                      <X className="h-3 w-3" />
+                      Cancel
+                    </>
                   ) : (
-                    <Sparkles className="h-3 w-3" />
+                    <>
+                      <Sparkles className="h-3 w-3" />
+                      {hasSummary ? "Regenerate" : "Generate"}
+                    </>
                   )}
-                  {hasSummary ? "Regenerate" : "Generate"}
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs text-xs space-y-1.5 p-3">
@@ -125,20 +140,41 @@ export function MeetingSummary({
             </div>
           )}
 
+          {/* Generating skeleton */}
+          {isGenerating && !hasSummary && (
+            <div className="px-5 py-4 border-b border-border space-y-3">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-5/6" />
+              <Skeleton className="h-4 w-4/6" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-3/4" />
+            </div>
+          )}
+
           {/* Summary */}
           {summary && (
             <div className="px-5 py-4 border-b border-border">
               <div className="flex items-center justify-between mb-2">
                 <h4 className="text-[10px] uppercase tracking-wider text-muted-foreground">Summary</h4>
                 <button
-                  onClick={() => { navigator.clipboard.writeText(summary); toast.success("Summary copied"); }}
+                  onClick={() => copyToClipboard(summary, "Summary copied")}
                   className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Copy className="h-3 w-3" />
                   Copy
                 </button>
               </div>
-              <p className="text-sm leading-relaxed text-card-foreground">{summary}</p>
+              <div className="prose prose-sm prose-invert max-w-none text-card-foreground
+                prose-headings:text-card-foreground prose-headings:font-medium prose-headings:mt-3 prose-headings:mb-1.5
+                prose-p:text-card-foreground prose-p:leading-relaxed prose-p:my-1.5
+                prose-strong:text-card-foreground prose-strong:font-semibold
+                prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-li:text-card-foreground
+                prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+                prose-code:text-primary prose-code:bg-secondary/30 prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-xs
+                prose-blockquote:border-l-primary/50 prose-blockquote:text-muted-foreground">
+                <ReactMarkdown>{summary}</ReactMarkdown>
+              </div>
             </div>
           )}
 
@@ -153,8 +189,7 @@ export function MeetingSummary({
                 <button
                   onClick={() => {
                     const text = actionItems.map((a) => `${a.done ? "✅" : "⬜"} [${a.assignee}] ${a.text}`).join("\n");
-                    navigator.clipboard.writeText(text);
-                    toast.success("Action items copied");
+                    copyToClipboard(text, "Action items copied");
                   }}
                   className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                 >

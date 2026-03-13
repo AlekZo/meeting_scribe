@@ -3,9 +3,11 @@ import { MEETING_CATEGORIES, MeetingCategory, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, loadSetting, saveSetting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Search, X, Tag, CalendarIcon, ChevronDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Search, X, Tag, CalendarIcon, ChevronDown, FileSearch } from "lucide-react";
 import { useState, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { format, parseISO, isSameDay } from "date-fns";
@@ -83,6 +85,17 @@ export default function MeetingsPage() {
     saveSetting("meetings_filter_status", status);
   };
 
+  const clearAllFilters = () => {
+    setSearch("");
+    setActiveCategory("all");
+    setActiveStatus("all");
+    setSelectedDate(undefined);
+    saveSetting("meetings_filter_category", "all");
+    saveSetting("meetings_filter_status", "all");
+  };
+
+  const hasActiveFilters = search || activeCategory !== "all" || activeStatus !== "all" || selectedDate;
+
   // Count meetings per category
   const categoryCounts = new Map<string, number>();
   categoryCounts.set("all", meetingsWithOverrides.length);
@@ -91,6 +104,48 @@ export default function MeetingsPage() {
   }
 
   const statuses = ["all", "completed", "transcribing", "pending", "error"];
+
+  // Shared calendar component
+  const calendarContent = (
+    <>
+      <Calendar
+        mode="single"
+        selected={selectedDate}
+        onSelect={(day) => {
+          if (day && selectedDate && isSameDay(day, selectedDate)) {
+            setSelectedDate(undefined);
+          } else {
+            setSelectedDate(day);
+          }
+        }}
+        modifiers={{
+          hasMeeting: meetingDates,
+        }}
+        modifiersStyles={{
+          hasMeeting: {
+            fontWeight: 700,
+            textDecoration: "underline",
+            textUnderlineOffset: "3px",
+            textDecorationThickness: "2px",
+          },
+        }}
+        className="p-2 pointer-events-auto"
+      />
+      {selectedDate && (
+        <div className="px-3 pb-2 flex items-center justify-between">
+          <span className="text-[10px] font-mono text-muted-foreground">
+            {format(selectedDate, "MMM d, yyyy")}
+          </span>
+          <button
+            onClick={() => setSelectedDate(undefined)}
+            className="text-[10px] text-primary hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div className="space-y-6 2xl:space-y-8">
@@ -127,7 +182,7 @@ export default function MeetingsPage() {
           <div className="flex flex-wrap items-center gap-4 mt-4">
             {/* Category filter */}
             <div className="flex items-center gap-1.5">
-              <Tag className="h-3.5 w-3.5 text-muted-foreground" />
+              <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
               <div className="flex flex-wrap items-center gap-1">
                 {(["all", ...MEETING_CATEGORIES] as const).map((cat) => {
                   const count = categoryCounts.get(cat) || 0;
@@ -151,10 +206,10 @@ export default function MeetingsPage() {
               </div>
             </div>
 
-            <div className="h-4 w-px bg-border" />
+            <div className="hidden sm:block h-4 w-px bg-border" />
 
             {/* Status filter */}
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               {statuses.map((s) => (
                 <button
                   key={s}
@@ -171,7 +226,22 @@ export default function MeetingsPage() {
               ))}
             </div>
 
-            <div className="h-4 w-px bg-border" />
+            <div className="hidden sm:block h-4 w-px bg-border" />
+
+            {/* Mobile date filter (popover) */}
+            <div className="md:hidden">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-1.5 text-xs h-7">
+                    <CalendarIcon className="h-3 w-3" />
+                    {selectedDate ? format(selectedDate, "MMM d") : "Date"}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  {calendarContent}
+                </PopoverContent>
+              </Popover>
+            </div>
 
             {/* Selected date indicator */}
             {selectedDate && (
@@ -190,7 +260,7 @@ export default function MeetingsPage() {
           </div>
         </div>
 
-        {/* Calendar — top-right, collapsed by default */}
+        {/* Calendar — top-right, collapsed by default (desktop only) */}
         <div className="hidden md:block shrink-0">
           <Collapsible>
             <div className="rounded-lg border border-border bg-card">
@@ -208,42 +278,7 @@ export default function MeetingsPage() {
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="border-t border-border p-1">
-                  <Calendar
-                    mode="single"
-                    selected={selectedDate}
-                    onSelect={(day) => {
-                      if (day && selectedDate && isSameDay(day, selectedDate)) {
-                        setSelectedDate(undefined);
-                      } else {
-                        setSelectedDate(day);
-                      }
-                    }}
-                    modifiers={{
-                      hasMeeting: meetingDates,
-                    }}
-                    modifiersStyles={{
-                      hasMeeting: {
-                        fontWeight: 700,
-                        textDecoration: "underline",
-                        textUnderlineOffset: "3px",
-                        textDecorationThickness: "2px",
-                      },
-                    }}
-                    className="p-2 pointer-events-auto"
-                  />
-                  {selectedDate && (
-                    <div className="px-3 pb-2 flex items-center justify-between">
-                      <span className="text-[10px] font-mono text-muted-foreground">
-                        {format(selectedDate, "MMM d, yyyy")}
-                      </span>
-                      <button
-                        onClick={() => setSelectedDate(undefined)}
-                        className="text-[10px] text-primary hover:underline"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  )}
+                  {calendarContent}
                 </div>
               </CollapsibleContent>
             </div>
@@ -271,7 +306,23 @@ export default function MeetingsPage() {
           />
         ))}
         {filtered.length === 0 && (
-          <p className="py-12 text-center text-sm text-muted-foreground">No meetings found</p>
+          <div className="py-16 flex flex-col items-center justify-center text-center border border-dashed border-border rounded-lg bg-secondary/10">
+            <FileSearch className="h-8 w-8 text-muted-foreground/50 mb-3" />
+            <h3 className="text-sm font-medium text-foreground">No meetings found</h3>
+            <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+              We couldn't find any meetings matching your current search or filter criteria.
+            </p>
+            {hasActiveFilters && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                onClick={clearAllFilters}
+              >
+                Clear all filters
+              </Button>
+            )}
+          </div>
         )}
       </div>
     </div>

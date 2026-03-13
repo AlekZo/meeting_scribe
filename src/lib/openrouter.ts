@@ -165,7 +165,7 @@ export const COST_WARNING_THRESHOLD = 0.50; // $0.50
 export async function callOpenRouter(
   task: AITask,
   messages: ChatMessage[],
-  options?: { modelOverride?: string }
+  options?: { modelOverride?: string; signal?: AbortSignal }
 ): Promise<OpenRouterResponse> {
   const apiKey = getOpenRouterKey();
   if (!apiKey) throw new MissingApiKeyError();
@@ -181,6 +181,7 @@ export async function callOpenRouter(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model: modelId, messages }),
+    signal: options?.signal,
   });
 
   if (!resp.ok) {
@@ -212,7 +213,7 @@ export async function callOpenRouterStreaming(
   task: AITask,
   messages: ChatMessage[],
   onChunk: (text: string) => void,
-  options?: { modelOverride?: string }
+  options?: { modelOverride?: string; signal?: AbortSignal }
 ): Promise<OpenRouterResponse> {
   const apiKey = getOpenRouterKey();
   if (!apiKey) throw new MissingApiKeyError();
@@ -228,6 +229,7 @@ export async function callOpenRouterStreaming(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ model: modelId, messages, stream: true }),
+    signal: options?.signal,
   });
 
   if (!resp.ok) {
@@ -285,21 +287,16 @@ export async function callOpenRouterStreaming(
   };
 }
 
-// Queue for serializing usage tracking writes to avoid race conditions
-let usageWriteQueue: Promise<void> = Promise.resolve();
-
 export function trackMeetingUsage(meetingId: string, usage: AIUsage): void {
-  usageWriteQueue = usageWriteQueue.then(() => {
-    const all = loadSetting<Record<string, AIUsage>>("meeting_usage", {});
-    const prev = all[meetingId] ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 };
-    all[meetingId] = {
-      promptTokens: prev.promptTokens + usage.promptTokens,
-      completionTokens: prev.completionTokens + usage.completionTokens,
-      totalTokens: prev.totalTokens + usage.totalTokens,
-      estimatedCost: prev.estimatedCost + usage.estimatedCost,
-    };
-    saveSetting("meeting_usage", all);
-  });
+  const all = loadSetting<Record<string, AIUsage>>("meeting_usage", {});
+  const prev = all[meetingId] ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0, estimatedCost: 0 };
+  all[meetingId] = {
+    promptTokens: prev.promptTokens + usage.promptTokens,
+    completionTokens: prev.completionTokens + usage.completionTokens,
+    totalTokens: prev.totalTokens + usage.totalTokens,
+    estimatedCost: prev.estimatedCost + usage.estimatedCost,
+  };
+  saveSetting("meeting_usage", all);
 }
 
 export function getMeetingUsage(meetingId: string): AIUsage {

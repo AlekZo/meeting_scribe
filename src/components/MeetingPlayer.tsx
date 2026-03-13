@@ -15,6 +15,8 @@ import {
   ChevronsDown,
   Search,
   X,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
@@ -79,6 +81,7 @@ function formatTime(sec: number): string {
 
 export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename, searchQuery, onSearchChange, searchResultCount }: MeetingPlayerProps) {
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const activeSegmentRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -99,8 +102,40 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const userScrolledRef = useRef(false);
   const scrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Search navigation state
+  const [searchMatchIndex, setSearchMatchIndex] = useState(0);
+
   // Unique speakers for consistent coloring
   const allSpeakers = Array.from(new Set(segments.map((s) => s.speaker)));
+
+  // Compute search match indices
+  const searchMatchIndices = useMemo(() => {
+    if (!searchQuery?.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    return segments
+      .map((seg, i) => (seg.text.toLowerCase().includes(q) ? i : -1))
+      .filter((i) => i !== -1);
+  }, [searchQuery, segments]);
+
+  // Reset match index when query changes
+  useEffect(() => {
+    setSearchMatchIndex(0);
+  }, [searchQuery]);
+
+  // Segment refs for search navigation
+  const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+
+  const navigateSearch = useCallback((direction: 1 | -1) => {
+    if (searchMatchIndices.length === 0) return;
+    const next = (searchMatchIndex + direction + searchMatchIndices.length) % searchMatchIndices.length;
+    setSearchMatchIndex(next);
+    const segIdx = searchMatchIndices[next];
+    const el = segmentRefs.current.get(segIdx);
+    if (el) {
+      setAutoScroll(false);
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [searchMatchIndices, searchMatchIndex]);
 
   useEffect(() => {
     const idx = segments.findIndex(
@@ -126,7 +161,6 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   // Detect manual scroll to disable auto-scroll
   const handleTranscriptScroll = useCallback(() => {
     if (!autoScroll) return;
-    // Debounce — only disable if user is actively scrolling (not programmatic)
     userScrolledRef.current = true;
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
     scrollTimeoutRef.current = setTimeout(() => {
@@ -157,25 +191,42 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     else mediaRef.current.play();
   };
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — use refs to avoid stale closures, scoped to player container
+  const stateRef = useRef({ currentTime, duration, isPlaying });
+  useEffect(() => {
+    stateRef.current = { currentTime, duration, isPlaying };
+  }, [currentTime, duration, isPlaying]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Don't capture when typing in inputs
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable) return;
+
+      // Only handle shortcuts when the player or body is focused
+      const container = containerRef.current;
+      if (document.activeElement !== document.body && container && !container.contains(document.activeElement)) return;
+
+      const { currentTime: ct, duration: dur, isPlaying: playing } = stateRef.current;
 
       switch (e.key) {
         case " ":
           e.preventDefault();
-          togglePlay();
+          if (!mediaRef.current) {
+            setIsPlaying((p) => !p);
+          } else if (playing) {
+            mediaRef.current.pause();
+          } else {
+            mediaRef.current.play();
+          }
           break;
         case "ArrowLeft":
           e.preventDefault();
-          seekTo(Math.max(0, currentTime - 5));
+          seekTo(Math.max(0, ct - 5));
           break;
         case "ArrowRight":
           e.preventDefault();
-          seekTo(Math.min(duration, currentTime + 5));
+          seekTo(Math.min(dur, ct + 5));
           break;
         case "m":
         case "M":
@@ -189,7 +240,8 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Demo playback — use wall-clock time to prevent drift
   const demoDuration = segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 60;
@@ -222,6 +274,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const handleSeekChange = (val: number[]) => {
     setIsScrubbing(true);
     setScrubTime(val[0]);
+    if (mediaRef.current) mediaRef.current.currentTime = val[0];
   };
 
   const handleSeekCommit = (val: number[]) => {
@@ -231,8 +284,12 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
 
   const handleVolume = (val: number[]) => {
     setVolume(val[0]);
-    setIsMuted(val[0] === 0);
-    if (mediaRef.current) mediaRef.current.volume = val[0] / 100;
+    const muted = val[0] === 0;
+    setIsMuted(muted);
+    if (mediaRef.current) {
+      mediaRef.current.volume = val[0] / 100;
+      mediaRef.current.muted = muted;
+    }
   };
 
   const skip = (delta: number) => seekTo(Math.max(0, Math.min(duration, currentTime + delta)));
@@ -270,7 +327,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const isVideo = mediaType === "video";
 
   return (
-    <div className="flex flex-col rounded-lg border border-border bg-card overflow-hidden" tabIndex={0} role="region" aria-label="Media player">
+    <div ref={containerRef} className="flex flex-col rounded-lg border border-border bg-card overflow-hidden" tabIndex={0} role="region" aria-label="Media player">
       {/* Video area */}
       {isVideo && (
         <div className="relative aspect-video bg-background flex items-center justify-center">
@@ -351,7 +408,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           meetingDate={date}
         />
 
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-1">
             <button onClick={() => skip(-10)} title="Rewind 10s (←)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
               <SkipBack className="h-4 w-4" />
@@ -366,9 +423,9 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Transcript search */}
+            {/* Transcript search with navigation */}
             {onSearchChange && segments.length > 0 && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <div className="relative">
                   <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                   <Input
@@ -386,16 +443,32 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
                     </button>
                   )}
                 </div>
-                {searchResultCount !== undefined && searchQuery && (
-                  <span className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
-                    {searchResultCount} found
-                  </span>
+                {searchMatchIndices.length > 0 && searchQuery && (
+                  <>
+                    <span className="text-[10px] text-muted-foreground font-mono whitespace-nowrap">
+                      {searchMatchIndex + 1}/{searchMatchIndices.length}
+                    </span>
+                    <button
+                      onClick={() => navigateSearch(-1)}
+                      title="Previous match"
+                      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                    >
+                      <ChevronUp className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => navigateSearch(1)}
+                      title="Next match"
+                      className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors"
+                    >
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                  </>
                 )}
               </div>
             )}
 
-            {/* Volume */}
-            <div className="flex items-center gap-2">
+            {/* Volume — hidden on mobile (hardware buttons) */}
+            <div className="hidden sm:flex items-center gap-2">
               <button onClick={() => {
                 const next = !isMuted;
                 setIsMuted(next);
@@ -427,9 +500,10 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
                     <Input
                       value={editValue}
                       onChange={(e) => setEditValue(e.target.value)}
-                      className="h-5 w-24 border-0 bg-transparent px-1 py-0 text-xs font-medium focus-visible:ring-0"
+                      className="h-5 w-32 border-0 bg-transparent px-1 py-0 text-xs font-medium focus-visible:ring-0"
                       autoFocus
                       onBlur={confirmRename}
+                      onKeyDown={(e) => { if (e.key === "Escape") setEditingSpeaker(null); }}
                     />
                     <button type="submit" className={cn("h-3.5 w-3.5", colors.text)}>
                       <Check className="h-3.5 w-3.5" />
@@ -477,16 +551,22 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
                 const isActive = seg.index === activeIndex;
                 const ci = getSpeakerColorIndex(seg.speaker, allSpeakers);
                 const colors = colorClasses[ci];
+                const isSearchMatch = searchMatchIndices.length > 0 && searchMatchIndices[searchMatchIndex] === seg.index;
                 return (
                   <div
                     key={seg.index}
-                    ref={isActive ? activeSegmentRef : undefined}
+                    ref={(el) => {
+                      if (isActive) (activeSegmentRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+                      if (el) segmentRefs.current.set(seg.index, el);
+                    }}
                     onClick={() => seekTo(seg.startTime)}
                     className={cn(
                       "flex gap-4 px-5 py-2.5 cursor-pointer transition-all duration-200",
                       isActive
                         ? "bg-primary/5 border-l-2 border-l-primary"
-                        : "border-l-2 border-l-transparent hover:bg-secondary/30"
+                        : isSearchMatch
+                          ? "bg-warning/10 border-l-2 border-l-warning"
+                          : "border-l-2 border-l-transparent hover:bg-secondary/30"
                     )}
                   >
                     <div className="flex w-28 shrink-0 items-start gap-2 pt-0.5">
