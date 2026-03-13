@@ -62,8 +62,8 @@ export function ActivityLog({ events }: { events: ActivityEvent[] }) {
   return (
     <div className="space-y-1">
       {events.map((event) => {
-        const Icon = typeIcons[event.type];
-        const statusColor = statusColors[event.status];
+        const Icon = typeIcons[event.type] || RefreshCw;
+        const statusColor = statusColors[event.status] || "text-muted-foreground";
         return (
           <div
             key={event.id}
