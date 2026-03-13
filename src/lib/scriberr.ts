@@ -5,7 +5,9 @@ import { loadSetting } from "@/lib/storage";
 import type { TranscriptSegment } from "@/components/MeetingPlayer";
 
 function getConfig() {
-  const baseUrl = (loadSetting<string>("scriberr_url", "http://localhost:8080") || "").replace(/\/+$/, "");
+  // Check if user set a custom URL, otherwise use the nginx proxy
+  const storedUrl = loadSetting<string>("scriberr_url", "");
+  const baseUrl = storedUrl ? storedUrl.replace(/\/+$/, "") : "/scriberr";
   const apiKey = loadSetting<string>("scriberr_api_key", "");
   return { baseUrl, apiKey };
 }
@@ -20,13 +22,52 @@ function headers(apiKey: string, json = false): Record<string, string> {
 export interface ScriberrUploadResult {
   id: string;
   status: string;
-  message?: string;
+  error_message?: string;
 }
 
 export interface ScriberrStatus {
-  status: "pending" | "processing" | "completed" | "failed";
-  progress?: number;
-  result?: any;
+  status: "uploaded" | "pending" | "processing" | "completed" | "failed";
+  transcript?: string;
+  error_message?: string;
+}
+
+/** Progress tracking via SSE */
+export interface ScriberrProgress {
+  progress: number;
+  stage?: string;
+}
+
+/** Track real-time transcription progress via SSE */
+export function trackProgress(
+  jobId: string,
+  onProgress: (data: ScriberrProgress) => void,
+  onDone?: () => void,
+  onError?: (err: Error) => void
+): () => void {
+  const { baseUrl, apiKey } = getConfig();
+  const url = `${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/track-progress`;
+  const eventSource = new EventSource(url);
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onProgress(data);
+    } catch {
+      // ignore parse errors
+    }
+  };
+
+  eventSource.addEventListener("done", () => {
+    eventSource.close();
+    onDone?.();
+  });
+
+  eventSource.onerror = (e) => {
+    eventSource.close();
+    onError?.(new Error("Progress tracking connection lost"));
+  };
+
+  return () => eventSource.close();
 }
 
 export interface ScriberrTranscript {
@@ -46,18 +87,14 @@ export interface ScriberrTranscript {
 /** Upload an audio file to Scriberr */
 export async function uploadAudio(
   file: File,
-  title: string,
-  language: string = "auto",
-  diarization: boolean = true
+  title: string
 ): Promise<ScriberrUploadResult> {
   const { baseUrl, apiKey } = getConfig();
   const formData = new FormData();
   formData.append("audio", file, file.name);
   formData.append("title", title);
-  formData.append("diarization", String(diarization));
-  if (language && language !== "auto") formData.append("language", language);
 
-  const res = await fetch(`${baseUrl}/api/v1/transcription/submit`, {
+  const res = await fetch(`${baseUrl}/api/v1/transcription/upload`, {
     method: "POST",
     headers: headers(apiKey),
     body: formData,
@@ -113,7 +150,7 @@ export async function startTranscription(jobId: string, options?: {
     output_format: "all",
     verbose: true,
     task: "transcribe",
-    language: options?.language || "en",
+    ...(options?.language && options.language !== "auto" ? { language: options.language } : {}),
     vad_method: vad ? "pyannote" : "none",
     vad_onset: 0.55,
     vad_offset: 0.35,
@@ -179,10 +216,25 @@ export function convertSegments(scriberrSegments: ScriberrTranscript["segments"]
   }));
 }
 
-/** Get the Scriberr web UI URL for a job */
-export function getScriberrUrl(jobId: string): string {
+/** Get the audio file streaming URL for a job */
+export function getAudioUrl(jobId: string): string {
   const { baseUrl } = getConfig();
-  return `${baseUrl}/audio/${jobId}`;
+  return `${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/audio`;
+}
+
+/** Parse OOM error from API ErrorResponse JSON embedded in error message */
+function isOomError(err: any): boolean {
+  try {
+    // Error message format: "Start transcription failed: 500 {\"error\":\"...out of memory...\"}"
+    const match = err.message?.match(/\{.*\}/s);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      return typeof parsed.error === "string" && parsed.error.toLowerCase().includes("out of memory");
+    }
+  } catch {
+    // fallback to raw string check
+  }
+  return err.message?.toLowerCase()?.includes("out of memory") ?? false;
 }
 
 /** Start transcription with CPU fallback on OOM */
@@ -191,10 +243,10 @@ export async function startWithOomRetry(jobId: string, options?: { language?: st
     return await startTranscription(jobId, options);
   } catch (err: any) {
     const autoRetry = loadSetting("auto_retry_oom", true);
-    if (autoRetry && err.message?.includes("out of memory")) {
+    if (autoRetry && isOomError(err)) {
       // Override to CPU settings temporarily
       const { baseUrl, apiKey } = getConfig();
-      const payload = {
+      const payload: Record<string, any> = {
         model_family: "whisper",
         model: loadSetting("whisper_model", "large-v3"),
         device: "cpu",
@@ -202,7 +254,7 @@ export async function startWithOomRetry(jobId: string, options?: { language?: st
         batch_size: 1,
         diarize: loadSetting("whisper_diarization", true),
         diarize_model: "pyannote",
-        language: options?.language || "en",
+        ...(options?.language && options.language !== "auto" ? { language: options.language } : {}),
         task: "transcribe",
       };
       const res = await fetch(`${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/start`, {

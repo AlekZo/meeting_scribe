@@ -29,8 +29,8 @@ type ConnectionStatus = "untested" | "testing" | "connected" | "error";
 
 export default function SettingsPage() {
   // ── Scriberr ──
-  const [scriberrUrl, setScriberrUrl] = useState(() => loadSetting("scriberr_url", "http://localhost:8080"));
-  const [apiKey, setApiKey] = useState(() => loadSetting("scriberr_api_key", ""));
+  const [scriberrUrl, setScriberrUrl] = useState(() => loadSetting("scriberr_url", ""));
+  const [apiKey, setApiKey] = useState(() => loadSetting("scriberr_api_key", "4JXrgIJmCECYRkvGbhySgP6ncQm66XRV"));
   const [scriberrStatus, setScriberrStatus] = useState<ConnectionStatus>("untested");
 
   // ── Telegram ──
@@ -82,10 +82,11 @@ export default function SettingsPage() {
     }
     setScriberrStatus("testing");
     try {
-      const base = scriberrUrl.replace(/\/+$/, "");
-      const res = await fetch(`${base}/health`, {
+      // Use proxy if no custom URL is set
+      const base = scriberrUrl ? scriberrUrl.replace(/\/+$/, "") : "/scriberr";
+      const res = await fetch(`${base}/api/v1/transcription/list?page=1&limit=1`, {
         method: "GET",
-        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        headers: apiKey ? { "X-API-Key": apiKey } : {},
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {

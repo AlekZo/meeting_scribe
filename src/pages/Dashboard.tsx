@@ -14,7 +14,7 @@ import {
   getTranscriptionStatus,
   getTranscript,
   convertSegments,
-  getScriberrUrl,
+  getAudioUrl,
 } from "@/lib/scriberr";
 import type { Meeting } from "@/data/meetings";
 
@@ -160,7 +160,7 @@ export default function Dashboard() {
         if (status.status === "processing") {
           updateQueueItem(queueId, {
             status: "transcribing",
-            progress: status.progress ?? undefined,
+            progress: undefined,
           });
         } else if (status.status === "completed") {
           clearInterval(interval);
@@ -235,7 +235,7 @@ export default function Dashboard() {
       try {
         const result = isVideo
           ? await uploadVideo(item.file, item.file.name.replace(/\.[^.]+$/, ""))
-          : await uploadAudio(item.file, item.file.name.replace(/\.[^.]+$/, ""), item.language, diarization);
+          : await uploadAudio(item.file, item.file.name.replace(/\.[^.]+$/, ""));
 
         const jobId = result.id;
         updateQueueItem(item.id, { status: "uploaded", jobId });
@@ -462,7 +462,7 @@ export default function Dashboard() {
                     )}
                     {item.jobId && item.status === "completed" && (
                       <a
-                        href={getScriberrUrl(item.jobId)}
+                        href={getAudioUrl(item.jobId)}
                         target="_blank"
                         rel="noreferrer"
                         className="text-[10px] text-primary hover:underline font-mono"
