@@ -86,13 +86,14 @@ if (typeof window !== "undefined") {
 /** Initial sync: pull all data from server into localStorage (server wins on conflicts via updated_at) */
 export async function initServerSync(): Promise<void> {
   if (syncInitialized) return;
-  syncInitialized = true;
 
   const available = await checkServer();
   if (!available) {
     console.info("[storage] Server not available — using localStorage only");
     return;
   }
+
+  syncInitialized = true;
 
   try {
     const res = await fetch(`${API_BASE}/store`);
@@ -254,6 +255,11 @@ export async function uploadRestore(file: File): Promise<{ restoredKeys: number 
     const text = await file.text();
     const data = JSON.parse(text);
     let count = 0;
+
+    // Clear existing meetscribe_ keys before restoring to avoid merge artifacts
+    const keysToRemove = Object.keys(localStorage).filter(k => k.startsWith(STORAGE_PREFIX));
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
     for (const [key, value] of Object.entries(data)) {
       localStorage.setItem(key, value as string);
       count++;

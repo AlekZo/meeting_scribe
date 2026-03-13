@@ -21,6 +21,11 @@ interface ParsedRow {
 
 function parseExcelDate(val: any): string {
   if (!val) return new Date().toISOString().split("T")[0];
+  // Handle native JS Date objects (caused by cellDates: true)
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return new Date().toISOString().split("T")[0];
+    return val.toISOString().split("T")[0];
+  }
   // Excel serial number
   if (typeof val === "number") {
     const d = XLSX.SSF.parse_date_code(val);
@@ -54,15 +59,12 @@ function parseSpeakers(val: any): string[] {
 function parseSummary(val: any): string {
   if (!val) return "";
   let raw = String(val).trim();
-  // Try extracting summary from JSON-like content
   try {
-    // Clean up: handle unquoted keys
     const cleaned = raw.replace(/```json\s*/g, "").replace(/```/g, "").trim();
-    const parsed = JSON.parse(cleaned.replace(/(\w+):/g, '"$1":').replace(/'/g, '"'));
+    const parsed = JSON.parse(cleaned);
     if (parsed.summary) return parsed.summary;
   } catch {
-    // Try regex extract
-    const match = raw.match(/summary[:\s]*["']?(.+?)["']?\s*[,}]/s);
+    const match = raw.match(/["']?summary["']?\s*[:\s]+["']?(.+?)["']?\s*[,}]/s);
     if (match) return match[1].trim();
   }
   return raw.slice(0, 500);
@@ -112,7 +114,7 @@ function rowToMeeting(row: any[], headers: string[], index: number): Meeting | n
   const date = parseExcelDate(get("date"));
   const speakers = parseSpeakers(get("speakers"));
   const summary = parseSummary(get("summary"));
-  const tags = get("tags") ? String(get("tags")).split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+  const tags = get("tags") ? String(get("tags")).split(/[,;]/).map((t: string) => t.trim()).filter(Boolean) : [];
 
   const meeting: Meeting = {
     id: `import_${Date.now()}_${index}`,
@@ -174,7 +176,7 @@ export default function ExcelImportSection() {
           meetingType: String(get("meetingType") ?? "").trim(),
           speakers: parseSpeakers(get("speakers")),
           summary: parseSummary(get("summary")).slice(0, 80),
-          tags: get("tags") ? String(get("tags")).split(",").map((t: string) => t.trim()).filter(Boolean) : [],
+          tags: get("tags") ? String(get("tags")).split(/[,;]/).map((t: string) => t.trim()).filter(Boolean) : [],
           videoUrl: String(get("videoUrl") ?? "").trim(),
           scriberrUrl: String(get("scriberrUrl") ?? "").trim(),
           googleDocUrl: String(get("googleDocUrl") ?? "").trim(),

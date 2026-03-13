@@ -7,10 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, X, Tag, CalendarIcon, ChevronDown, FileSearch } from "lucide-react";
-import { useState, useMemo } from "react";
+import { Search, X, Tag, CalendarIcon, ChevronDown, FileSearch, Upload, FileVideo, FileAudio, Globe, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { format, parseISO, isSameDay } from "date-fns";
+import { useUpload, LANGUAGES } from "@/contexts/UploadContext";
+import { getAudioUrl } from "@/lib/scriberr";
+import type { Meeting } from "@/data/meetings";
 
 export default function MeetingsPage() {
   const [search, setSearch] = useState("");
@@ -21,24 +24,39 @@ export default function MeetingsPage() {
     loadSetting<string>("meetings_filter_status", "all")
   );
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
+  const [showUploadZone, setShowUploadZone] = useState(true);
+  const [dragOver, setDragOver] = useState(false);
 
-  const typeRules = loadSetting<TagRule[]>("type_rules", []);
-  const categoryRules = loadSetting<TagRule[]>("category_rules", []);
+  // Upload context
+  const upload = useUpload();
+  const { queue, isProcessing, addFiles, removeFile, setLanguage, startTranscription, activeCount, queuedCount } = upload;
 
-  const allMeetings = loadMeetings();
+  // Meetings data — refresh when uploads complete
+  const [meetingsVersion, setMeetingsVersion] = useState(0);
 
-  const meetingsWithOverrides = allMeetings.map((m) => {
-    const ov = loadMeetingOverrides(m.id);
-    const tagged = m.segments.length > 0 ? autoTag(m.segments, typeRules, categoryRules) : { meetingType: undefined, autoCategories: [] };
-    return {
-      ...m,
-      category: ov.category ?? m.category,
-      tags: ov.tags ?? m.tags ?? [],
-      title: ov.title ?? m.title,
-      meetingType: ov.meetingType ?? m.meetingType ?? tagged.meetingType,
-      autoCategories: ov.autoCategories ?? m.autoCategories ?? tagged.autoCategories,
-    };
-  });
+  useEffect(() => {
+    upload.setOnMeetingsChanged(() => setMeetingsVersion((v) => v + 1));
+    return () => upload.setOnMeetingsChanged(undefined);
+  }, [upload]);
+
+  const typeRules = useMemo(() => loadSetting<TagRule[]>("type_rules", []), []);
+  const categoryRules = useMemo(() => loadSetting<TagRule[]>("category_rules", []), []);
+  const allMeetings = useMemo(() => loadMeetings(), [meetingsVersion]);
+
+  const meetingsWithOverrides = useMemo(() => {
+    return allMeetings.map((m) => {
+      const ov = loadMeetingOverrides(m.id);
+      const tagged = m.segments.length > 0 ? autoTag(m.segments, typeRules, categoryRules) : { meetingType: undefined, autoCategories: [] };
+      return {
+        ...m,
+        category: ov.category ?? m.category,
+        tags: ov.tags ?? m.tags ?? [],
+        title: ov.title ?? m.title,
+        meetingType: ov.meetingType ?? m.meetingType ?? tagged.meetingType,
+        autoCategories: ov.autoCategories ?? m.autoCategories ?? tagged.autoCategories,
+      };
+    });
+  }, [allMeetings, typeRules, categoryRules]);
 
   // Deduplicate meeting dates for calendar highlights
   const meetingDates = useMemo(() => {
@@ -105,6 +123,47 @@ export default function MeetingsPage() {
 
   const statuses = ["all", "completed", "transcribing", "pending", "error"];
 
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    addFiles(Array.from(e.dataTransfer.files));
+  }, [addFiles]);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return;
+    addFiles(Array.from(e.target.files));
+  };
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case "uploading":
+      case "transcribing":
+        return <Loader2 className="h-4 w-4 text-primary animate-spin" />;
+      case "completed":
+        return <CheckCircle2 className="h-4 w-4 text-success" />;
+      case "error":
+        return <AlertCircle className="h-4 w-4 text-destructive" />;
+      default:
+        return null;
+    }
+  };
+
+  const statusLabel = (item: typeof queue[0]) => {
+    switch (item.status) {
+      case "uploading": return "Uploading…";
+      case "uploaded": return "Uploaded";
+      case "transcribing": return item.progress ? `Transcribing ${item.progress}%` : "Transcribing…";
+      case "completed": return "Done";
+      case "error": return item.error || "Error";
+      default: return "";
+    }
+  };
+
   // Shared calendar component
   const calendarContent = (
     <>
@@ -149,6 +208,167 @@ export default function MeetingsPage() {
 
   return (
     <div className="space-y-6 2xl:space-y-8">
+      {/* Upload drop zone — dismissible, integrated at top */}
+      {(showUploadZone || queue.length > 0) && (
+        <div className="space-y-3">
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={cn(
+              "relative flex items-center justify-center gap-4 rounded-lg border-2 border-dashed py-6 transition-all",
+              dragOver
+                ? "border-primary bg-primary/5"
+                : "border-border bg-card/50 hover:border-muted-foreground/30"
+            )}
+          >
+            <Upload className={cn("h-6 w-6 shrink-0", dragOver ? "text-primary" : "text-muted-foreground")} />
+            <div>
+              <p className="text-sm font-medium text-card-foreground">
+                Drop audio/video files here or{" "}
+                <label className="cursor-pointer text-primary hover:underline">
+                  browse
+                  <input
+                    type="file"
+                    className="hidden"
+                    multiple
+                    accept=".mp4,.mkv,.avi,.mov,.webm,.mp3,.wav,.ogg,.m4a,.flac"
+                    onChange={handleFileSelect}
+                  />
+                </label>
+              </p>
+              <p className="text-[10px] text-muted-foreground font-mono">
+                MP4 · MKV · AVI · MOV · WEBM · MP3 · WAV · OGG · M4A · FLAC
+              </p>
+            </div>
+            {queue.length === 0 && (
+              <button
+                onClick={() => setShowUploadZone(false)}
+                className="absolute top-2 right-2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                title="Hide upload zone"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Upload Queue */}
+          {queue.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-muted-foreground">
+                  Queue ({queue.length})
+                  {activeCount > 0 && (
+                    <span className="ml-1.5 text-xs text-primary">{activeCount} processing</span>
+                  )}
+                </span>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={startTranscription}
+                  disabled={queuedCount === 0 || isProcessing}
+                  className="h-7 text-xs"
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                      Processing…
+                    </>
+                  ) : (
+                    `Start${queuedCount > 0 ? ` (${queuedCount})` : ""}`
+                  )}
+                </Button>
+              </div>
+              {queue.map((item) => {
+                const isVideo = /\.(mp4|mkv|avi|mov|webm)$/i.test(item.file.name);
+                return (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "flex items-center justify-between rounded-lg border px-3 py-2 transition-colors",
+                      item.status === "error"
+                        ? "border-destructive/30 bg-destructive/5"
+                        : item.status === "completed"
+                          ? "border-success/30 bg-success/5"
+                          : "border-border bg-card"
+                    )}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {statusIcon(item.status) || (isVideo ? (
+                        <FileVideo className="h-3.5 w-3.5 text-info" />
+                      ) : (
+                        <FileAudio className="h-3.5 w-3.5 text-primary" />
+                      ))}
+                      <div>
+                        <p className="text-xs font-medium text-card-foreground">{item.file.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-[10px] text-muted-foreground font-mono">{formatSize(item.file.size)}</p>
+                          {item.status !== "queued" && (
+                            <span className={cn(
+                              "text-[10px] font-mono",
+                              item.status === "error" ? "text-destructive" :
+                              item.status === "completed" ? "text-success" :
+                              "text-primary"
+                            )}>
+                              {statusLabel(item)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {item.status === "queued" && (
+                        <div className="flex items-center gap-1">
+                          <Globe className="h-3 w-3 text-muted-foreground" />
+                          <select
+                            value={item.language}
+                            onChange={(e) => setLanguage(item.id, e.target.value)}
+                            className="h-6 rounded border border-border bg-background px-1.5 text-[10px] font-mono text-foreground focus:ring-1 focus:ring-ring outline-none"
+                          >
+                            {LANGUAGES.map((lang) => (
+                              <option key={lang.code} value={lang.code}>
+                                {lang.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      {item.jobId && item.status === "completed" && (
+                        <a
+                          href={getAudioUrl(item.jobId)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-primary hover:underline font-mono"
+                        >
+                          Scriberr
+                        </a>
+                      )}
+                      <button
+                        onClick={() => removeFile(item.id)}
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Show upload zone button when hidden */}
+      {!showUploadZone && queue.length === 0 && (
+        <button
+          onClick={() => setShowUploadZone(true)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Upload className="h-3 w-3" />
+          Show upload zone
+        </button>
+      )}
+
       {/* Header row with title + calendar */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
@@ -156,7 +376,7 @@ export default function MeetingsPage() {
             <div>
               <h1 className="text-2xl 2xl:text-3xl 3xl:text-4xl font-semibold tracking-tight">Meetings</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                All recorded meetings and their transcription status
+                {allMeetings.length} meetings · {allMeetings.filter((m) => m.status === "completed").length} transcribed
               </p>
             </div>
             <div className="relative w-64">
@@ -310,7 +530,9 @@ export default function MeetingsPage() {
             <FileSearch className="h-8 w-8 text-muted-foreground/50 mb-3" />
             <h3 className="text-sm font-medium text-foreground">No meetings found</h3>
             <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-              We couldn't find any meetings matching your current search or filter criteria.
+              {allMeetings.length === 0
+                ? "Drop a file above to get started, or import from Excel in Settings."
+                : "No meetings match your current search or filter criteria."}
             </p>
             {hasActiveFilters && (
               <Button

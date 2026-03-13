@@ -41,43 +41,51 @@ export interface ScriberrStatus {
   error_message?: string;
 }
 
-/** Progress tracking via SSE */
+/** Progress tracking via polling (Scriberr has no SSE endpoint) */
 export interface ScriberrProgress {
   progress: number;
   stage?: string;
 }
 
-/** Track real-time transcription progress via SSE */
+/** Track transcription progress by polling status every 10s */
 export function trackProgress(
   jobId: string,
   onProgress: (data: ScriberrProgress) => void,
   onDone?: () => void,
   onError?: (err: Error) => void
 ): () => void {
-  const { baseUrl, apiKey } = getConfig();
-  const url = `${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/track-progress`;
-  const eventSource = new EventSource(url);
+  let stopped = false;
 
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onProgress(data);
-    } catch {
-      // ignore parse errors
+  const poll = async () => {
+    while (!stopped) {
+      try {
+        const status = await getTranscriptionStatus(jobId);
+        if (stopped) break;
+
+        if (status.status === "completed") {
+          onProgress({ progress: 100, stage: "completed" });
+          onDone?.();
+          break;
+        } else if (status.status === "failed") {
+          onError?.(new Error(status.error_message || "Transcription failed"));
+          break;
+        } else if (status.status === "processing") {
+          onProgress({ progress: 50, stage: "processing" });
+        } else if (status.status === "pending") {
+          onProgress({ progress: 10, stage: "pending" });
+        }
+      } catch (err) {
+        if (!stopped) onError?.(err instanceof Error ? err : new Error(String(err)));
+        break;
+      }
+      // Wait 10 seconds between polls
+      await new Promise((r) => setTimeout(r, 10_000));
     }
   };
 
-  eventSource.addEventListener("done", () => {
-    eventSource.close();
-    onDone?.();
-  });
+  poll();
 
-  eventSource.onerror = (e) => {
-    eventSource.close();
-    onError?.(new Error("Progress tracking connection lost"));
-  };
-
-  return () => eventSource.close();
+  return () => { stopped = true; };
 }
 
 export interface ScriberrTranscript {
@@ -103,8 +111,11 @@ export async function uploadAudio(
   const formData = new FormData();
   formData.append("audio", file, file.name);
   formData.append("title", title);
+  // Python script explicitly sets diarization here for /submit
+  formData.append("diarization", "true");
 
-  const res = await fetch(`${baseUrl}/api/v1/transcription/upload`, {
+  // Changed from /upload to /submit to match Python script
+  const res = await fetch(`${baseUrl}/api/v1/transcription/submit`, {
     method: "POST",
     headers: headers(apiKey),
     body: formData,
@@ -170,6 +181,16 @@ export async function startTranscription(jobId: string, options?: {
     temperature: 0,
     beam_size: beamSize,
     fp16: computeType === "float16",
+    // Stability parameters from Python script (hallucination/OOM prevention)
+    condition_on_previous_text: false,
+    compression_ratio_threshold: 2.4,
+    no_speech_threshold: 0.6,
+    logprob_threshold: -1,
+    best_of: 5,
+    patience: 1,
+    length_penalty: 1,
+    suppress_numerals: false,
+    segment_resolution: "sentence",
   };
 
   const res = await fetch(`${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/start`, {
@@ -229,7 +250,8 @@ export function convertSegments(scriberrSegments: ScriberrTranscript["segments"]
 /** Get the audio file streaming URL for a job */
 export function getAudioUrl(jobId: string): string {
   const { baseUrl } = getConfig();
-  return `${baseUrl}/api/v1/transcription/${encodeURIComponent(jobId)}/audio`;
+  // Fixed to match Python script logic: scriberr_link = f"{self.base_url}/audio/{job_id}"
+  return `${baseUrl}/audio/${encodeURIComponent(jobId)}`;
 }
 
 /** Parse OOM error from API ErrorResponse JSON embedded in error message */
@@ -262,8 +284,14 @@ export async function startWithOomRetry(jobId: string, options?: { language?: st
         device: "cpu",
         compute_type: "int8",
         batch_size: 1,
+        threads: 14,
+        chunk_size: loadSetting("whisper_chunk_size", 20),
+        vad_method: "pyannote",
         diarize: loadSetting("whisper_diarization", true),
         diarize_model: "pyannote",
+        fp16: false,
+        condition_on_previous_text: false,
+        compression_ratio_threshold: 2.4,
         ...(options?.language && options.language !== "auto" ? { language: options.language } : {}),
         task: "transcribe",
       };

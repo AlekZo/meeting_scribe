@@ -1,5 +1,5 @@
 import { useParams, useNavigate, NavLink } from "react-router-dom";
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
@@ -12,6 +12,17 @@ import { TranscriptExport } from "@/components/TranscriptExport";
 import { MeetingMetaMenu } from "@/components/MeetingMetaMenu";
 import { MeetingSidebar } from "@/components/MeetingSidebar";
 import { MeetingSummary } from "@/components/MeetingSummary";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,6 +87,8 @@ function EditableText({
   inputClassName,
   placeholder,
   renderDisplay,
+  type,
+  validate,
 }: {
   value: string;
   isEditing: boolean;
@@ -88,7 +101,19 @@ function EditableText({
   inputClassName?: string;
   placeholder?: string;
   renderDisplay?: (value: string) => React.ReactNode;
+  type?: string;
+  validate?: (v: string) => boolean;
 }) {
+  const handleBlur = () => {
+    const trimmed = editValue.trim();
+    // If empty or invalid, treat blur as cancel
+    if (!trimmed || (validate && !validate(trimmed))) {
+      onCancel();
+    } else {
+      onConfirm();
+    }
+  };
+
   if (isEditing) {
     return (
       <form onSubmit={(e) => { e.preventDefault(); onConfirm(); }} className="flex items-center gap-1">
@@ -97,8 +122,9 @@ function EditableText({
           onChange={(e) => onEditValueChange(e.target.value)}
           className={cn("h-7 text-xs bg-background font-mono px-1.5", inputClassName)}
           placeholder={placeholder}
+          type={type}
           autoFocus
-          onBlur={onConfirm}
+          onBlur={handleBlur}
           onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
         />
         <button type="submit" className="text-primary"><Check className="h-3 w-3" /></button>
@@ -117,7 +143,7 @@ function EditableText({
       title="Click to edit"
     >
       {renderDisplay ? renderDisplay(value) : value}
-      <Pencil className="h-2.5 w-2.5 text-muted-foreground/0 group-hover/edit:text-muted-foreground transition-colors" />
+      <Pencil className="h-2.5 w-2.5 text-muted-foreground/30 group-hover/edit:text-muted-foreground transition-colors" />
     </span>
   );
 }
@@ -230,6 +256,7 @@ export default function MeetingDetailPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSuggestingTitle, setIsSuggestingTitle] = useState(false);
   const [transcriptSearch, setTranscriptSearch] = useState("");
+  const [costEstimate, setCostEstimate] = useState<{ inputTokens: number; estimatedCost: number; modelLabel: string } | null>(null);
 
   // ── Editing helpers ──
   const startEdit = (field: EditableField) => {
@@ -349,15 +376,15 @@ export default function MeetingDetailPage() {
     }
   };
 
-  const handleGenerateSummary = async () => {
+  const handleGenerateSummary = async (skipCostCheck = false) => {
     if (!safeSegments.length) return;
     const transcript = safeSegments.map((s) => `[${s.speaker}]: ${s.text}`).join("\n");
-    const estimate = estimateCallCost("summarization", transcript);
-    if (estimate.estimatedCost > COST_WARNING_THRESHOLD) {
-      const proceed = window.confirm(
-        `This will process ~${estimate.inputTokens.toLocaleString()} tokens using ${estimate.modelLabel}.\nEstimated cost: $${estimate.estimatedCost.toFixed(2)}\n\nProceed?`
-      );
-      if (!proceed) return;
+    if (!skipCostCheck) {
+      const estimate = estimateCallCost("summarization", transcript);
+      if (estimate.estimatedCost > COST_WARNING_THRESHOLD) {
+        setCostEstimate(estimate);
+        return;
+      }
     }
     setIsGenerating(true);
     try {
@@ -463,9 +490,8 @@ export default function MeetingDetailPage() {
         <div className="sticky top-0 z-20 -mx-6 -mt-6 px-6 pt-5 pb-4 bg-background/95 backdrop-blur-sm border-b border-border">
           {/* Breadcrumb */}
           <nav className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-3">
-            <NavLink to="/" className="hover:text-foreground transition-colors">Dashboard</NavLink>
+            <NavLink to="/" className="hover:text-foreground transition-colors">Meetings</NavLink>
             <ChevronRight className="h-3 w-3" />
-            <NavLink to="/meetings" className="hover:text-foreground transition-colors">Meetings</NavLink>
             <ChevronRight className="h-3 w-3" />
             <span className="text-foreground font-medium truncate max-w-[200px]">{formData.title}</span>
           </nav>
@@ -502,7 +528,7 @@ export default function MeetingDetailPage() {
                         title="Click to edit"
                       >
                         {formData.title}
-                        <Pencil className="h-3.5 w-3.5 text-muted-foreground/0 group-hover/title:text-muted-foreground transition-colors shrink-0" />
+                        <Pencil className="h-3.5 w-3.5 text-muted-foreground/30 group-hover/title:text-muted-foreground transition-colors shrink-0" />
                       </h1>
                       {safeSegments.length > 0 && (
                         <TooltipProvider>
@@ -646,10 +672,30 @@ export default function MeetingDetailPage() {
                 </>
               )}
               {meeting.status === "transcribing" && (
-                <Button variant="outline" size="sm" className="gap-1.5 text-xs text-destructive">
-                  <XCircle className="h-3.5 w-3.5" />
-                  Cancel
-                </Button>
+                <div className="ml-4 border-l border-border pl-4">
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-1.5 text-xs text-destructive border-destructive/30 hover:bg-destructive/10">
+                        <XCircle className="h-3.5 w-3.5" />
+                        Cancel
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Cancel transcription?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will stop the current GPU transcription job. You'll need to re-upload the file to try again.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Keep Running</AlertDialogCancel>
+                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                          Cancel Transcription
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
               )}
               {safeSegments.length > 0 && (
                 <Button variant="outline" size="sm" className="gap-1.5 text-xs">
@@ -684,6 +730,7 @@ export default function MeetingDetailPage() {
                 className="font-mono text-card-foreground"
                 inputClassName="w-20"
                 placeholder="1:23:45"
+                validate={(v) => /^\d+:\d{2}(:\d{2})?$/.test(v)}
               />
             </div>
             <div className="h-4 w-px bg-border hidden sm:block" />
@@ -698,8 +745,10 @@ export default function MeetingDetailPage() {
                 onConfirm={() => confirmEdit("date")}
                 onCancel={cancelEdit}
                 className="font-mono text-card-foreground"
-                inputClassName="w-32"
+                inputClassName="w-36"
                 placeholder="2026-03-12"
+                type="date"
+                validate={(v) => /^\d{4}-\d{2}-\d{2}$/.test(v)}
               />
             </div>
             <div className="h-4 w-px bg-border hidden sm:block" />
@@ -858,7 +907,7 @@ export default function MeetingDetailPage() {
           onToggleAction={handleToggleAction}
           hasTranscript={safeSegments.length > 0}
           isGenerating={isGenerating}
-          onGenerate={handleGenerateSummary}
+          onGenerate={() => handleGenerateSummary()}
         />
 
         {/* Player — borderless canvas feel */}
@@ -881,6 +930,25 @@ export default function MeetingDetailPage() {
         seriesMeetings={seriesMeetings}
         hasSeriesMatches={seriesMeetings.length > 0}
       />
+
+      {/* Cost confirmation dialog */}
+      <AlertDialog open={!!costEstimate} onOpenChange={(open) => !open && setCostEstimate(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>High API Cost Warning</AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <p>This will process ~{costEstimate?.inputTokens.toLocaleString()} tokens using <span className="font-mono font-medium">{costEstimate?.modelLabel}</span>.</p>
+              <p className="text-lg font-semibold text-foreground">Estimated cost: ${costEstimate?.estimatedCost.toFixed(2)}</p>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setCostEstimate(null); handleGenerateSummary(true); }}>
+              Proceed
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

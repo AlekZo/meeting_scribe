@@ -1,18 +1,17 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
-  LayoutDashboard,
-  Upload,
   List,
   Settings,
   Mic,
   Activity,
-  ScrollText,
   Cpu,
   MessageCircle,
   Calendar,
   PanelLeftClose,
   PanelLeft,
+  Loader2,
+  Upload,
 } from "lucide-react";
 import { loadSetting, saveSetting } from "@/lib/storage";
 import { useState } from "react";
@@ -22,14 +21,16 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useUpload } from "@/contexts/UploadContext";
 
 function ServiceStatusIndicators({ collapsed }: { collapsed: boolean }) {
-  const scriberrUrl = loadSetting<string>("scriberr_url", "");
+  const navigate = useNavigate();
+  const scriberrUrl = loadSetting<string>("scriberr_url", "").trim();
   const tgEnabled = loadSetting<boolean>("tg_enabled", false);
   const googleCalId = loadSetting<string>("google_calendar_id", "");
 
   const items = [
-    { label: "Scriberr", icon: Cpu, connected: !!scriberrUrl },
+    { label: "Scriberr", icon: Cpu, connected: true, detail: scriberrUrl ? "Custom URL" : "Proxy mode" },
     { label: "Telegram", icon: MessageCircle, connected: tgEnabled },
     { label: "Google", icon: Calendar, connected: !!googleCalId },
   ];
@@ -37,25 +38,32 @@ function ServiceStatusIndicators({ collapsed }: { collapsed: boolean }) {
   return (
     <div className={cn("flex items-center", collapsed ? "flex-col gap-2" : "gap-3")}>
       {items.map((item) => (
-        <div key={item.label} className="flex items-center gap-1" title={`${item.label}: ${item.connected ? "Configured" : "Not configured"}`}>
+        <button
+          key={item.label}
+          onClick={() => !item.connected && navigate("/settings")}
+          className={cn(
+            "flex items-center gap-1 transition-colors",
+            !item.connected && "cursor-pointer hover:text-foreground"
+          )}
+          title={`${item.label}: ${item.connected ? (item.detail ? `${item.detail} configured` : "Configured") : "Not configured — click to set up"}`}
+        >
           <item.icon className="h-3 w-3 text-muted-foreground" />
           {!collapsed && <span className={cn("h-1.5 w-1.5 rounded-full", item.connected ? "bg-success" : "bg-muted-foreground/40")} />}
-        </div>
+        </button>
       ))}
     </div>
   );
 }
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/meetings", icon: List, label: "Meetings" },
-  { to: "/activity", icon: ScrollText, label: "Activity Log" },
+  { to: "/", icon: List, label: "Meetings" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 
 export function AppSidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => loadSetting<boolean>("sidebar_collapsed", false));
+  const { activeCount } = useUpload();
 
   const toggle = () => {
     const next = !collapsed;
@@ -86,7 +94,7 @@ export function AppSidebar() {
           {navItems.map((item) => {
             const isActive =
               item.to === "/"
-                ? location.pathname === "/"
+                ? location.pathname === "/" || location.pathname.startsWith("/meetings")
                 : location.pathname.startsWith(item.to);
 
             const link = (
@@ -119,6 +127,27 @@ export function AppSidebar() {
             return link;
           })}
         </nav>
+
+        {/* Active uploads indicator */}
+        {activeCount > 0 && (
+          <div className={cn("border-t border-border", collapsed ? "px-2 py-2 flex justify-center" : "px-3 py-2")}>
+            <NavLink
+              to="/"
+              className={cn(
+                "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/15 transition-colors w-full",
+                collapsed && "justify-center"
+              )}
+            >
+              <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              {!collapsed && (
+                <span className="flex items-center gap-1.5">
+                  <Upload className="h-3 w-3" />
+                  {activeCount} processing
+                </span>
+              )}
+            </NavLink>
+          </div>
+        )}
 
         {/* Collapse toggle */}
         <div className={cn("border-t border-border", collapsed ? "px-2 py-2 flex justify-center" : "px-3 py-2")}>

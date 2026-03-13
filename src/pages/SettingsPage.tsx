@@ -3,7 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server, Lock, Unlock } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server, Lock, Unlock, ScrollText, Search, Filter } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,12 +19,13 @@ import {
 import { toast } from "sonner";
 import AIModelRoutingSection from "@/components/settings/AIModelRoutingSection";
 import { cn } from "@/lib/utils";
-import { loadSetting, saveSetting, downloadBackup, uploadRestore, getServerInfo } from "@/lib/storage";
+import { loadSetting, saveSetting, downloadBackup, uploadRestore, getServerInfo, loadActivityLog } from "@/lib/storage";
 import AIPromptsSection from "@/components/settings/AIPromptsSection";
 import OfflineSyncSection from "@/components/settings/OfflineSyncSection";
 import FolderWatchSection from "@/components/settings/FolderWatchSection";
 import AutoTagRulesSection from "@/components/settings/AutoTagRulesSection";
 import ExcelImportSection from "@/components/settings/ExcelImportSection";
+import { ActivityLog, ActivityEvent } from "@/components/ActivityLog";
 
 type ConnectionStatus = "untested" | "testing" | "connected" | "error";
 
@@ -76,15 +78,19 @@ export default function SettingsPage() {
     getServerInfo().then(setServerInfo);
   }, []);
 
+  const normalizeScriberrHost = (value: string) =>
+    value.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+
+  const resolveScriberrBase = () => {
+    const normalizedHost = normalizeScriberrHost(scriberrUrl);
+    if (!normalizedHost) return `${window.location.origin}/scriberr`;
+    return `${scriberrProtocol}://${normalizedHost}`;
+  };
+
   const testScriberr = async () => {
-    if (!scriberrUrl) {
-      setScriberrStatus("error");
-      toast.error("Scriberr URL is empty");
-      return;
-    }
     setScriberrStatus("testing");
     try {
-      const base = `${scriberrProtocol}://${scriberrUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
+      const base = resolveScriberrBase();
       const h: Record<string, string> = {};
       if (apiKey) {
         if (authMethod === "bearer") {
@@ -100,7 +106,7 @@ export default function SettingsPage() {
       });
       if (res.ok) {
         setScriberrStatus("connected");
-        toast.success("Scriberr is healthy");
+        toast.success(normalizeScriberrHost(scriberrUrl) ? "Scriberr is healthy" : "Scriberr proxy is healthy");
       } else {
         setScriberrStatus("error");
         toast.error(`Scriberr returned ${res.status}`);
@@ -117,12 +123,13 @@ export default function SettingsPage() {
   };
 
   const handleSave = () => {
+    const normalizedScriberrHost = normalizeScriberrHost(scriberrUrl);
+
     // Scriberr
-    saveSetting("scriberr_url", scriberrUrl);
+    saveSetting("scriberr_url", normalizedScriberrHost);
     saveSetting("scriberr_protocol", scriberrProtocol);
     saveSetting("scriberr_api_key", apiKey);
     saveSetting("scriberr_auth_method", authMethod);
-    // Telegram
     saveSetting("tg_enabled", tgEnabled);
     saveSetting("tg_bot_token", tgBotToken);
     saveSetting("tg_chat_id", tgChatId);
@@ -160,14 +167,55 @@ export default function SettingsPage() {
   // Helper to update state + mark dirty
   const set = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); markDirty(); };
 
+  // Activity log state
+  const [activitySearch, setActivitySearch] = useState("");
+  const [activityFilter, setActivityFilter] = useState("all");
+
+  const rawLog = loadActivityLog();
+  const allActivity: ActivityEvent[] = rawLog.map((entry: any, i: number) => ({
+    id: entry.id || `log_${i}`,
+    timestamp: entry.timestamp || "",
+    type: entry.type || "system",
+    message: entry.message || "",
+    status: entry.status || (entry.type === "error" ? "error" : "success"),
+    details: entry.details,
+  }));
+
+  const filteredActivity = allActivity.filter((e) => {
+    if (activityFilter !== "all" && e.type !== activityFilter) return false;
+    if (activitySearch && !e.message.toLowerCase().includes(activitySearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const activityFilters = [
+    { value: "all", label: "All" },
+    { value: "upload", label: "Upload" },
+    { value: "transcription", label: "Transcription" },
+    { value: "error", label: "Errors" },
+  ];
+
   return (
-    <div className="space-y-8 2xl:space-y-10 max-w-2xl 2xl:max-w-3xl 3xl:max-w-4xl">
+    <div className="space-y-6 2xl:space-y-8 max-w-2xl 2xl:max-w-3xl 3xl:max-w-4xl">
       <div>
         <h1 className="text-2xl 2xl:text-3xl 3xl:text-4xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Configure integrations and preferences
         </p>
       </div>
+
+      <Tabs defaultValue="settings" className="space-y-6">
+        <TabsList>
+          <TabsTrigger value="settings">Configuration</TabsTrigger>
+          <TabsTrigger value="activity" className="gap-1.5">
+            <ScrollText className="h-3.5 w-3.5" />
+            Activity Log
+            {allActivity.length > 0 && (
+              <span className="ml-1 text-[10px] opacity-60">{allActivity.length}</span>
+            )}
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="settings" className="space-y-8 2xl:space-y-10">
 
       {/* Scriberr */}
       <section className="space-y-4 rounded-lg border border-border bg-card p-6">
@@ -183,7 +231,7 @@ export default function SettingsPage() {
         </div>
         <div className="space-y-3">
           <div>
-            <Label className="text-xs text-muted-foreground">Base URL</Label>
+            <Label className="text-xs text-muted-foreground">Base URL (optional)</Label>
             <div className="flex items-center gap-0 mt-1">
               <button
                 type="button"
@@ -203,9 +251,12 @@ export default function SettingsPage() {
                 value={scriberrUrl}
                 onChange={(e) => set(setScriberrUrl)(e.target.value)}
                 className="rounded-l-none bg-background font-mono text-sm"
-                placeholder="localhost:8080"
+                placeholder="Leave empty to use /scriberr proxy"
               />
             </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Docker cross-stack: expose Scriberr on host port <span className="font-mono">8080</span> and keep this field empty.
+            </p>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Authentication</Label>
@@ -589,25 +640,10 @@ export default function SettingsPage() {
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                 onClick={() => {
-                  // Preserve Excel-imported meetings (IDs start with "import_")
-                  const meetingsRaw = localStorage.getItem("meetscribe_meetings");
-                  let excelMeetings: any[] = [];
-                  if (meetingsRaw) {
-                    try {
-                      const all = JSON.parse(meetingsRaw);
-                      excelMeetings = Array.isArray(all) ? all.filter((m: any) => m.id?.startsWith("import_")) : [];
-                    } catch {}
-                  }
-
                   const keys = Object.keys(localStorage).filter((k) => k.startsWith("meetscribe_"));
                   keys.forEach((k) => localStorage.removeItem(k));
 
-                  // Restore Excel-imported meetings
-                  if (excelMeetings.length > 0) {
-                    localStorage.setItem("meetscribe_meetings", JSON.stringify(excelMeetings));
-                  }
-
-                  toast.success(`Cleared data. Preserved ${excelMeetings.length} Excel-imported meetings.`);
+                  toast.success("Cleared all data, including imported meetings.");
                   setTimeout(() => window.location.reload(), 500);
                 }}
               >
@@ -617,6 +653,62 @@ export default function SettingsPage() {
           </AlertDialogContent>
         </AlertDialog>
       </div>
+        </TabsContent>
+
+        <TabsContent value="activity" className="space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search activity..."
+                className="pl-9 bg-card"
+                value={activitySearch}
+                onChange={(e) => setActivitySearch(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              {activityFilters.map((f) => (
+                <button
+                  key={f.value}
+                  onClick={() => setActivityFilter(f.value)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                    activityFilter === f.value
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            {allActivity.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  saveSetting("activity_log", []);
+                  window.location.reload();
+                }}
+                className="text-xs text-muted-foreground gap-1"
+              >
+                <Trash2 className="h-3 w-3" />
+                Clear
+              </Button>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-card">
+            {filteredActivity.length > 0 ? (
+              <ActivityLog events={filteredActivity} />
+            ) : (
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                {allActivity.length === 0 ? "No activity yet. Upload a file to see events here." : "No activity found"}
+              </p>
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

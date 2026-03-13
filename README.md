@@ -1,133 +1,74 @@
 # MeetScribe
 
-Self-hosted meeting transcription manager with Scriberr (Whisper) integration, activity logging, and hybrid local/server persistence.
+Self-hosted meeting transcription manager with [Scriberr](https://github.com/JamesCodesStuff/Scriberr) (Whisper) integration.
 
 ## Features
 
-- 🎙️ **Transcription** — Upload audio/video and transcribe via Scriberr (Whisper)
-- 📊 **Dashboard** — Overview of meetings, stats, and recent activity
+- 🎙️ **Transcription** — Upload audio/video, transcribe via Scriberr with GPU acceleration
+- 📊 **Dashboard** — Stats, activity log, and processing pipeline overview
 - 📝 **Meeting Management** — Edit titles, summaries, tags, speakers, and categories
 - 📅 **Google Calendar & Docs** — Link meetings to calendar events and external transcripts
-- 📥 **Excel Import** — Bulk-import meetings from `.xlsx` / `.csv` files
+- 📥 **Excel Import** — Bulk-import meetings from `.xlsx` / `.csv`
 - 💾 **Backup & Restore** — Full zip backup/restore of all data
-- 🔄 **Hybrid Storage** — localStorage for speed + SQLite server for persistence
-- 🐳 **Docker-ready** — Single `docker compose up` to run everything
+- 🔄 **Hybrid Storage** — localStorage + SQLite server for persistence
+- 🐳 **Docker-ready** — Two compose files, shared network, single command
 
 ## Tech Stack
 
-- **Frontend:** React, TypeScript, Vite, Tailwind CSS, shadcn/ui
-- **Backend:** Node.js, Express, better-sqlite3
-- **Proxy:** Nginx (serves frontend + proxies API & Scriberr)
-- **Deployment:** Docker Compose
+| Layer | Tech |
+|-------|------|
+| Frontend | React · TypeScript · Vite · Tailwind CSS · shadcn/ui |
+| Backend | Node.js · Express · better-sqlite3 |
+| Proxy | Nginx (frontend + API + Scriberr proxy) |
+| Transcription | Scriberr (WhisperX + pyannote) |
+| Deployment | Docker Compose |
 
 ---
 
-## 🐳 Docker Deployment (Recommended)
-
-### Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) (v20+)
-- [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
-
-### Quick Start
+## Quick Start
 
 ```bash
-# 1. Clone the repository
-git clone <YOUR_GIT_URL>
-cd <YOUR_PROJECT_NAME>
+# 1. Create the shared network
+docker network create scriberr-net
 
-# 2. Build and start all services
+# 2. Start Scriberr (GPU transcription engine)
+HF_TOKEN=hf_your_token docker compose -f docker-compose.scriberr.yml up -d
+
+# 3. Start MeetScribe
 docker compose up -d --build
 
-# 3. Open in browser
+# 4. Open
 open http://localhost:7899
 ```
 
-That's it! The app is now running with:
-- **Frontend + Nginx proxy** on port `7899`
-- **API server + SQLite** on port `3001` (proxied through Nginx)
-- **Persistent data** stored in the `meetscribe_data` Docker volume
-
-### Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              Docker Compose                 │
-│                                             │
-│  ┌──────────────────────┐                   │
-│  │   meetscribe (Nginx) │ ◄── :7899         │
-│  │   - Serves frontend  │                   │
-│  │   - Proxies /api/*   │──► api:3001       │
-│  │   - Proxies /scriberr│──► host:8080      │
-│  └──────────────────────┘                   │
-│                                             │
-│  ┌──────────────────────┐                   │
-│  │   api (Node.js)      │ ◄── :3001        │
-│  │   - Express + SQLite │                   │
-│  │   - /data volume     │──► meetscribe_data│
-│  └──────────────────────┘                   │
-└─────────────────────────────────────────────┘
-         │
-         ▼ (host.docker.internal)
-┌──────────────────┐
-│  Scriberr :8080  │  ◄── Your existing Scriberr instance
-└──────────────────┘
+┌─── docker-compose.yml ──────────────────────┐
+│                                              │
+│  meetscribe (Nginx) :7899                    │
+│  ├── Serves React frontend                   │
+│  ├── /api/*    → api:3001                    │
+│  └── /scriberr/* → scriberr:8080             │
+│                                              │
+│  api (Node.js) :3001                         │
+│  └── Express + SQLite → meetscribe_data vol  │
+│                                              │
+└──────────────────────────────────────────────┘
+         │ scriberr-net (shared network)
+┌─── docker-compose.scriberr.yml ─────────────┐
+│                                              │
+│  scriberr :8080                              │
+│  └── WhisperX + pyannote (CUDA/Blackwell)    │
+│                                              │
+└──────────────────────────────────────────────┘
 ```
 
-### Common Commands
+## Configuration
 
-```bash
-# Start services
-docker compose up -d
+### Scriberr Connection
 
-# Stop services
-docker compose down
-
-# View logs (follow mode)
-docker compose logs -f
-
-# View logs for a specific service
-docker compose logs -f api
-docker compose logs -f meetscribe
-
-# Rebuild after code changes
-docker compose up -d --build
-
-# Full reset (removes data volume!)
-docker compose down -v
-```
-
-### Data Persistence
-
-All data is stored in a Docker volume named `meetscribe_data`, which persists across container restarts and rebuilds.
-
-```bash
-# Inspect the volume
-docker volume inspect meetscribe_data
-
-# Backup the volume
-docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
-  tar czf /backup/meetscribe-data-backup.tar.gz -C /data .
-
-# Restore from backup
-docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
-  sh -c "cd /data && tar xzf /backup/meetscribe-data-backup.tar.gz"
-```
-
-You can also use the in-app **Backup & Restore** feature in Settings to download/upload a zip of all meetings, transcripts, and settings.
-
-### Scriberr Integration
-
-MeetScribe connects to your existing [Scriberr](https://github.com/JamesCodesStuff/Scriberr) instance for audio/video transcription.
-
-1. Make sure Scriberr is running on the same host (default: `http://localhost:8080`)
-2. In MeetScribe **Settings**, configure:
-   - **Scriberr URL** — e.g., `http://localhost:8080` (auto-proxied via Nginx)
-   - **API Key** — your Scriberr API key
-   - **Auth Method** — toggle between `X-API-Key` or `Bearer` token
-3. Click **Test Connection** to verify
-
-> **Note:** The Nginx proxy routes `/scriberr/*` requests to `host.docker.internal:8080`. If your Scriberr runs on a different port, update the `nginx.conf` file.
+Leave the **Scriberr URL** field empty in Settings — the Nginx proxy handles routing automatically via the shared Docker network. Only set a custom URL if Scriberr runs on a different host.
 
 ### Environment Variables
 
@@ -135,53 +76,54 @@ MeetScribe connects to your existing [Scriberr](https://github.com/JamesCodesStu
 |----------|---------|---------|-------------|
 | `DATA_DIR` | api | `/data` | SQLite database directory |
 | `PORT` | api | `3001` | API server port |
+| `HF_TOKEN` | scriberr | — | HuggingFace token for pyannote models |
+| `PUID` / `PGID` | scriberr | `1000` | File ownership inside container |
 
 ### Customizing Ports
 
-Edit `docker-compose.yml` to change exposed ports:
-
 ```yaml
+# docker-compose.yml
 services:
   meetscribe:
     ports:
-      - "8080:7899"   # Change 8080 to your desired frontend port
-  api:
-    ports:
-      - "4000:3001"   # Change 4000 to your desired API port
+      - "8080:7899"   # Change left side to your desired port
 ```
 
-If you change the Scriberr proxy port, also update `nginx.conf`:
-
-```nginx
-location /scriberr/ {
-    proxy_pass http://host.docker.internal:YOUR_SCRIBERR_PORT/;
-}
-```
-
----
-
-## 💻 Local Development
-
-### Prerequisites
-
-- Node.js 18+ ([install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating))
-
-### Setup
+## Common Commands
 
 ```bash
-# Install dependencies
-npm install
-
-# Start dev server (frontend only, uses localStorage)
-npm run dev
-
-# Optional: start the API server for full persistence
-cd server && npm install && node index.mjs
+docker compose up -d                 # Start
+docker compose down                  # Stop
+docker compose up -d --build         # Rebuild after changes
+docker compose logs -f               # Follow logs
+docker compose down -v               # Reset (removes data!)
 ```
 
-The dev server runs at `http://localhost:5173` with hot reloading.
+### Volume Backup
+
+```bash
+# Backup
+docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
+  tar czf /backup/meetscribe-backup.tar.gz -C /data .
+
+# Restore
+docker run --rm -v meetscribe_data:/data -v $(pwd):/backup alpine \
+  sh -c "cd /data && tar xzf /backup/meetscribe-backup.tar.gz"
+```
+
+Or use the in-app **Backup & Restore** in Settings.
 
 ---
+
+## Local Development
+
+```bash
+npm install
+npm run dev                          # Frontend at http://localhost:5173
+
+# Optional: API server for full persistence
+cd server && npm install && node index.mjs
+```
 
 ## Project Structure
 
@@ -189,14 +131,12 @@ The dev server runs at `http://localhost:5173` with hot reloading.
 ├── src/                  # React frontend
 │   ├── components/       # UI components
 │   ├── pages/            # Route pages
+│   ├── contexts/         # React contexts (upload queue)
 │   ├── lib/              # Utilities (storage, scriberr, auto-tagger)
-│   ├── data/             # Type definitions & mock data
-│   └── hooks/            # Custom React hooks
-├── server/               # Express API server
-│   └── index.mjs         # SQLite-backed key-value store
-├── nginx.conf            # Nginx proxy config
-├── Dockerfile            # Frontend multi-stage build
-├── server/Dockerfile     # API server build
-├── docker-compose.yml    # Full stack orchestration
+│   └── hooks/            # Custom hooks
+├── server/               # Express API + SQLite
+├── nginx.conf            # Proxy config
+├── docker-compose.yml    # MeetScribe stack
+├── docker-compose.scriberr.yml  # Scriberr stack
 └── docs/                 # API documentation
 ```

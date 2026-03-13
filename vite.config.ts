@@ -7,11 +7,24 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    port: 5173, // Changed from 8080 to avoid clashing with the Scriberr backend
     hmr: {
       overlay: false,
     },
     proxy: {
+      // 1. Proxy transcription API requests to Scriberr backend (running on 8080)
+      "/scriberr/api/v1/transcription": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/scriberr/, ""),
+      },
+      // 2. Proxy audio streaming requests to Scriberr backend
+      "/scriberr/audio": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/scriberr/, ""),
+      },
+      // 3. Proxy local database requests to the Node.js Express server (running on 3001)
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: true,
