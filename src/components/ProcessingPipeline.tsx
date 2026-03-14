@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { Check, Loader2, Clock, AlertCircle, ArrowRight, Brain, Tag, RefreshCw, WifiOff } from "lucide-react";
+import { Check, Loader2, Clock, AlertCircle, ArrowRight, Brain, Tag, RefreshCw, WifiOff, UserCheck, CalendarSearch, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -9,14 +9,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { isOnline } from "@/lib/storage";
+import { getScriberrJobUrl } from "@/lib/scriberr";
 
 export type PipelineStage =
   | "queued"
+  | "calendar_sync"
   | "uploading"
   | "submitted"
   | "transcribing"
   | "cleaning"
   | "speaker_id"
+  | "speaker_review"
   | "auto_tagging"
   | "ai_analysis"
   | "publishing"
@@ -33,11 +36,13 @@ interface PipelineStep {
 
 const PIPELINE_STEPS: PipelineStep[] = [
   { id: "queued", label: "Queued", description: "File added to processing queue" },
+  { id: "calendar_sync", label: "Calendar", description: "Matching file timestamp to Google Calendar event", requiresInternet: true },
   { id: "uploading", label: "Uploading", description: "Uploading to Scriberr API" },
   { id: "submitted", label: "Submitted", description: "Transcription job submitted" },
   { id: "transcribing", label: "Transcribing", description: "WhisperX processing audio" },
   { id: "cleaning", label: "Cleaning", description: "Merging segments, cleaning output" },
   { id: "speaker_id", label: "Speaker ID", description: "AI identifying speakers", requiresInternet: true },
+  { id: "speaker_review", label: "Review", description: "Confirm or edit speaker names before proceeding" },
   { id: "auto_tagging", label: "Auto-Tag", description: "Keyword-based category and type tagging" },
   { id: "ai_analysis", label: "AI Analysis", description: "Categorizing, summarizing, extracting action items", requiresInternet: true },
   { id: "publishing", label: "Publishing", description: "Logging to Google Sheets", requiresInternet: true },
@@ -46,15 +51,17 @@ const PIPELINE_STEPS: PipelineStep[] = [
 
 const stageOrder: Record<PipelineStage, number> = {
   queued: 0,
-  uploading: 1,
-  submitted: 2,
-  transcribing: 3,
-  cleaning: 4,
-  speaker_id: 5,
-  auto_tagging: 6,
-  ai_analysis: 7,
-  publishing: 8,
-  completed: 9,
+  calendar_sync: 1,
+  uploading: 2,
+  submitted: 3,
+  transcribing: 4,
+  cleaning: 5,
+  speaker_id: 6,
+  speaker_review: 7,
+  auto_tagging: 8,
+  ai_analysis: 9,
+  publishing: 10,
+  completed: 11,
   failed: -1,
 };
 
@@ -63,9 +70,13 @@ interface ProcessingPipelineProps {
   failedStage?: PipelineStage;
   className?: string;
   onRetryStage?: (stage: PipelineStage) => void;
+  /** Job ID used to build the Scriberr link */
+  jobId?: string;
+  /** Extra result info shown on hover when completed */
+  resultInfo?: { segmentCount?: number; duration?: string; wordCount?: number };
 }
 
-export function ProcessingPipeline({ currentStage, failedStage, className, onRetryStage }: ProcessingPipelineProps) {
+export function ProcessingPipeline({ currentStage, failedStage, className, onRetryStage, jobId, resultInfo }: ProcessingPipelineProps) {
   const currentOrder = stageOrder[currentStage];
   const isFailed = currentStage === "failed";
   const [hoveredStep, setHoveredStep] = useState<PipelineStage | null>(null);
@@ -83,6 +94,8 @@ export function ProcessingPipeline({ currentStage, failedStage, className, onRet
           const isPending = isFailed ? stepOrder > stageOrder[failedStage || "queued"] : currentOrder < stepOrder;
           const isAI = step.id === "ai_analysis";
           const isAutoTag = step.id === "auto_tagging";
+          const isReview = step.id === "speaker_review";
+          const isCalendar = step.id === "calendar_sync";
 
           // Show retry for: failed steps, or completed steps that can be re-run (publishing)
           const canRetry = isFailedStep || (step.id === "publishing" && isCompleted && onRetryStage);
@@ -108,17 +121,25 @@ export function ProcessingPipeline({ currentStage, failedStage, className, onRet
                           isPending && "bg-secondary text-muted-foreground",
                           isAI && isActive && "bg-purple-500 text-white",
                           isAutoTag && isActive && "bg-info text-info-foreground",
+                          isReview && isActive && "bg-warning/80 text-warning-foreground",
+                          isCalendar && isActive && "bg-info text-info-foreground",
                           canRetry && "cursor-pointer"
                         )}
                       >
                         {isCompleted ? (
                           <Check className="h-3.5 w-3.5" />
                         ) : isActive ? (
+                          isCalendar ? <CalendarSearch className="h-3.5 w-3.5 animate-pulse" /> :
+                          isReview ? <UserCheck className="h-3.5 w-3.5 animate-pulse" /> :
                           isAI ? <Brain className="h-3.5 w-3.5 animate-pulse" /> :
                           isAutoTag ? <Tag className="h-3.5 w-3.5 animate-pulse" /> :
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : isFailedStep ? (
                           <AlertCircle className="h-3.5 w-3.5" />
+                        ) : isCalendar ? (
+                          <CalendarSearch className="h-3 w-3" />
+                        ) : isReview ? (
+                          <UserCheck className="h-3 w-3" />
                         ) : isAI ? (
                           <Brain className="h-3 w-3" />
                         ) : isAutoTag ? (
@@ -131,6 +152,29 @@ export function ProcessingPipeline({ currentStage, failedStage, className, onRet
                     <TooltipContent side="bottom" className="max-w-xs p-2.5 space-y-1.5">
                       <p className="text-xs font-medium">{step.label}</p>
                       <p className="text-[10px] text-muted-foreground">{step.description}</p>
+                      {isCompleted && step.id === "completed" && resultInfo && (
+                        <div className="space-y-1 pt-1 border-t border-border">
+                          {resultInfo.segmentCount != null && (
+                            <p className="text-[10px] text-muted-foreground">{resultInfo.segmentCount} segments · {resultInfo.wordCount?.toLocaleString() ?? 0} words</p>
+                          )}
+                          {resultInfo.duration && (
+                            <p className="text-[10px] text-muted-foreground">Duration: {resultInfo.duration}</p>
+                          )}
+                          {(() => {
+                            const link = jobId ? getScriberrJobUrl(jobId) : null;
+                            return link ? (
+                              <a
+                                href={link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
+                              >
+                                Open in Scriberr <ExternalLink className="h-2.5 w-2.5" />
+                              </a>
+                            ) : null;
+                          })()}
+                        </div>
+                      )}
                       {isFailedStep && (
                         <p className="text-[10px] text-destructive font-medium">Failed — click Retry below</p>
                       )}

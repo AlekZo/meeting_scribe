@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server, Lock, Unlock, ScrollText, Search, Filter, Sparkles, Zap, FolderOpen, Tag, FileSpreadsheet, Bot, Settings2, ChevronRight, RefreshCw, File } from "lucide-react";
+import { Save, ExternalLink, MessageCircle, Loader2, CheckCircle2, XCircle, Cpu, Trash2, Download, Upload, Database, HardDrive, Server, Lock, Unlock, ScrollText, Search, Filter, Sparkles, Zap, FolderOpen, Tag, FileSpreadsheet, Bot, Settings2, ChevronRight, RefreshCw, File, Eye, EyeOff, Info, Moon, Sun, Monitor } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   AlertDialog,
@@ -54,9 +54,58 @@ const sections: SectionDef[] = [
   { id: "sync", label: "Local Storage & Sync", icon: HardDrive, group: "Data" },
   { id: "backup", label: "Data & Backup", icon: Database, group: "Data" },
   { id: "activity", label: "Activity Log", icon: ScrollText, group: "Data" },
+  { id: "appearance", label: "Appearance", icon: Monitor, group: "Data" },
 ];
 
 const groups = ["Integrations", "AI & Processing", "Data"];
+
+// ── Password input with show/hide toggle ──
+function PasswordInput({ value, onChange, className, placeholder }: { value: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; className?: string; placeholder?: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <Input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        className={cn(className, "pr-8")}
+        placeholder={placeholder}
+      />
+      <button
+        type="button"
+        onClick={() => setShow(!show)}
+        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+        aria-label={show ? "Hide" : "Show"}
+      >
+        {show ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+      </button>
+    </div>
+  );
+}
+
+// ── Info tooltip for Whisper params ──
+function InfoTip({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex ml-1">
+      <button
+        type="button"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onClick={() => setOpen(!open)}
+        className="text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+        aria-label="Info"
+      >
+        <Info className="h-3 w-3" />
+      </button>
+      {open && (
+        <span className="absolute bottom-full left-0 mb-1.5 px-2.5 py-2 rounded-md bg-popover border border-border text-[11px] leading-relaxed text-popover-foreground w-64 z-50 shadow-lg">
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
 
 export default function SettingsPage() {
   const [activeSection, setActiveSection] = useState("scriberr");
@@ -99,10 +148,24 @@ export default function SettingsPage() {
   const [chunkSize, setChunkSize] = useState(() => loadSetting("whisper_chunk_size", 20));
   const [diarization, setDiarization] = useState(() => loadSetting("whisper_diarization", true));
   const [vad, setVad] = useState(() => loadSetting("whisper_vad", true));
+  const [threads, setThreads] = useState(() => loadSetting("whisper_threads", 4));
 
-  // ── Dirty tracking ──
+  // ── Dirty tracking with beforeunload guard ──
   const [saved, setSaved] = useState(true);
   const markDirty = () => setSaved(false);
+
+  useEffect(() => {
+    if (saved) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saved]);
+
+  // ── Global settings search ──
+  const [settingsSearch, setSettingsSearch] = useState("");
 
   // ── Server info ──
   const [serverInfo, setServerInfo] = useState<{ available: boolean; dbSize?: number; version?: string } | null>(null);
@@ -183,7 +246,15 @@ export default function SettingsPage() {
 
   const testTelegram = async () => {
     setTgStatus("testing");
-    setTimeout(() => setTgStatus(tgBotToken ? "connected" : "error"), 1500);
+    try {
+      const { testBotConnection } = await import("@/lib/telegram");
+      const bot = await testBotConnection();
+      setTgStatus("connected");
+      toast.success(`Connected to @${bot.username}`);
+    } catch (err: any) {
+      setTgStatus("error");
+      toast.error(err.message || "Telegram connection failed");
+    }
   };
 
   const handleSave = () => {
@@ -212,6 +283,7 @@ export default function SettingsPage() {
     saveSetting("whisper_chunk_size", chunkSize);
     saveSetting("whisper_diarization", diarization);
     saveSetting("whisper_vad", vad);
+    saveSetting("whisper_threads", threads);
     setSaved(true);
     toast.success("Settings saved");
   };
@@ -254,12 +326,51 @@ export default function SettingsPage() {
 
   const activeGroup = sections.find((s) => s.id === activeSection)?.group || groups[0];
 
+  // ── Search matching: jump to matching section ──
+  useEffect(() => {
+    if (!settingsSearch.trim()) return;
+    const q = settingsSearch.toLowerCase();
+    // Map keywords to section IDs
+    const keywordMap: Record<string, string[]> = {
+      scriberr: ["scriberr", "api key", "proxy", "nginx", "connection"],
+      telegram: ["telegram", "bot token", "chat id", "tg"],
+      google: ["google", "calendar", "drive", "service account", "timezone"],
+      "ai-routing": ["openrouter", "model", "routing", "ai model"],
+      "ai-prompts": ["prompt", "system prompt"],
+      processing: ["auto-transcribe", "speaker detection", "retry", "oom"],
+      transcription: ["whisper", "beam", "batch", "compute", "diarization", "vad", "chunk"],
+      storage: ["volume", "docker", "mount"],
+      "auto-tags": ["tag", "rule", "category", "keyword"],
+      "folder-watch": ["folder", "watch", "directory"],
+      "excel-import": ["excel", "import", "spreadsheet"],
+      sync: ["sync", "local", "offline"],
+      backup: ["backup", "restore", "export", "clear"],
+      activity: ["activity", "log", "event"],
+      appearance: ["theme", "dark", "light", "appearance", "mode"],
+    };
+    for (const [sectionId, keywords] of Object.entries(keywordMap)) {
+      if (keywords.some((kw) => kw.includes(q) || q.includes(kw))) {
+        setActiveSection(sectionId);
+        break;
+      }
+    }
+  }, [settingsSearch]);
+
   return (
     <div className="space-y-6">
-      {/* Header + Save */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <Button onClick={handleSave} size="sm" className="gap-1.5">
+      {/* Header + Search + Save */}
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight shrink-0">Settings</h1>
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search settings..."
+            className="pl-9 h-8 text-xs bg-card"
+            value={settingsSearch}
+            onChange={(e) => setSettingsSearch(e.target.value)}
+          />
+        </div>
+        <Button onClick={handleSave} size="sm" className="gap-1.5 shrink-0">
           <Save className="h-3.5 w-3.5" />
           Save
           {!saved && <span className="ml-1 h-2 w-2 rounded-full bg-warning animate-pulse" />}
@@ -364,8 +475,7 @@ export default function SettingsPage() {
                     >
                       {authMethod === "x-api-key" ? "X-API-Key" : "Bearer"}
                     </button>
-                    <Input
-                      type="password"
+                    <PasswordInput
                       value={apiKey}
                       onChange={(e) => set(setApiKey)(e.target.value)}
                       className="rounded-l-none bg-background font-mono text-sm"
@@ -375,6 +485,46 @@ export default function SettingsPage() {
                 </div>
                 <Button variant="outline" size="sm" onClick={testScriberr} className="gap-1.5 text-xs">
                   Test Connection
+                </Button>
+              </div>
+
+              {/* Scriberr Cleanup */}
+              <div className="rounded-md border border-border p-4 space-y-2 mt-4">
+                <p className="text-sm font-medium text-foreground">Scriberr Cleanup</p>
+                <p className="text-xs text-muted-foreground">
+                  Remove processing data from Scriberr <strong>only</strong> for meetings tracked in this app.
+                  Other Scriberr jobs are not affected. Your local transcripts and media files will remain safe.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5 text-xs text-destructive border-destructive/30 hover:bg-destructive/10"
+                  onClick={async () => {
+                    const { loadMeetings: lm, saveMeetings: sm } = await import("@/lib/storage");
+                    const { deleteScriberrJob } = await import("@/lib/scriberr");
+                    const meetings = lm();
+                    let deletedCount = 0;
+                    for (const meeting of meetings) {
+                      if (meeting.id && !meeting.scriberrDeleted && meeting.status === "completed") {
+                        try {
+                          const success = await deleteScriberrJob(meeting.id);
+                          if (success) {
+                            meeting.scriberrDeleted = true;
+                            deletedCount++;
+                          }
+                        } catch {}
+                      }
+                    }
+                    sm(meetings);
+                    if (deletedCount > 0) {
+                      toast.success(`Cleaned up ${deletedCount} meeting(s) from Scriberr`);
+                    } else {
+                      toast.info("No meetings to clean up");
+                    }
+                  }}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Clean up Scriberr Storage
                 </Button>
               </div>
             </section>
@@ -396,7 +546,7 @@ export default function SettingsPage() {
                 <div className="space-y-3 pt-2">
                   <div>
                     <Label className="text-xs text-muted-foreground">Bot Token</Label>
-                    <Input type="password" value={tgBotToken} onChange={(e) => set(setTgBotToken)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" />
+                    <PasswordInput value={tgBotToken} onChange={(e) => set(setTgBotToken)(e.target.value)} className="mt-1 bg-background font-mono text-sm" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" />
                     <p className="mt-1 text-[10px] text-muted-foreground">
                       Get from <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-primary hover:underline">@BotFather</a>
                     </p>
@@ -482,7 +632,7 @@ export default function SettingsPage() {
                 <Label className="text-xs font-medium">Service Account</Label>
                 {googleSaEmail ? (
                   <div className="flex items-center gap-2 text-xs">
-                    <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+                    <CheckCircle2 className="h-3.5 w-3.5 text-success" />
                     <span className="font-mono text-muted-foreground truncate">{googleSaEmail}</span>
                     <Button size="sm" variant="ghost" className="ml-auto h-6 text-xs text-destructive" onClick={async () => {
                       await fetch("/api/google/service-account", { method: "DELETE" });
@@ -603,7 +753,7 @@ export default function SettingsPage() {
                   toast.error(`Test failed: ${err.message}`);
                 }
               }}>
-                {googleStatus === "testing" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : googleStatus === "connected" ? <CheckCircle2 className="h-3 w-3 mr-1 text-green-500" /> : googleStatus === "error" ? <XCircle className="h-3 w-3 mr-1 text-red-500" /> : null}
+                {googleStatus === "testing" ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : googleStatus === "connected" ? <CheckCircle2 className="h-3 w-3 mr-1 text-success" /> : googleStatus === "error" ? <XCircle className="h-3 w-3 mr-1 text-destructive" /> : null}
                 Test Google Connection
               </Button>
             </section>
@@ -646,49 +796,53 @@ export default function SettingsPage() {
           {activeSection === "transcription" && (
             <section className="space-y-4">
               <p className="text-xs text-muted-foreground">WhisperX configuration passed to Scriberr API</p>
-              <div className="grid grid-cols-2 gap-3">
+               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <Label className="text-xs text-muted-foreground">Model</Label>
+                  <Label className="text-xs text-muted-foreground">Model<InfoTip text="Whisper model size. 'large-v3' gives the best accuracy for most languages but needs ~6 GB VRAM. 'medium' is a solid compromise (~4 GB). 'small'/'base'/'tiny' are progressively faster but less accurate — useful for quick drafts or low-resource machines." /></Label>
                   <select value={whisperModel} onChange={(e) => set(setWhisperModel)(e.target.value)} className={selectCls}>
                     <option>large-v3</option><option>large-v2</option><option>medium</option><option>small</option><option>base</option><option>tiny</option>
                   </select>
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Device</Label>
+                  <Label className="text-xs text-muted-foreground">Device<InfoTip text="'CUDA' runs on your NVIDIA GPU and is 5-10× faster than CPU. Choose 'CPU' only if no GPU is available — transcription will be significantly slower but still functional." /></Label>
                   <select value={whisperDevice} onChange={(e) => set(setWhisperDevice)(e.target.value)} className={selectCls}>
                     <option value="cuda">CUDA (GPU)</option><option value="cpu">CPU</option>
                   </select>
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Batch Size</Label>
+                  <Label className="text-xs text-muted-foreground">Batch Size<InfoTip text="Number of audio chunks processed in parallel. Higher values (16-24) speed up transcription but consume more VRAM. If you get out-of-memory (OOM) errors, reduce this first. Start with 8 on 8 GB GPUs, 16-24 on 12+ GB." /></Label>
                   <Input value={batchSize} onChange={(e) => set(setBatchSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Compute Type</Label>
+                  <Label className="text-xs text-muted-foreground">Compute Type<InfoTip text="Numerical precision for inference. 'float16' — best speed/quality balance on GPU (recommended). 'int8' — uses ~50% less VRAM with minor quality loss, good for constrained GPUs. 'float32' — maximum precision but 2× more VRAM, rarely needed." /></Label>
                   <select value={computeType} onChange={(e) => set(setComputeType)(e.target.value)} className={selectCls}>
                     <option value="float16">float16</option><option value="int8">int8</option><option value="float32">float32</option>
                   </select>
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Beam Size</Label>
+                  <Label className="text-xs text-muted-foreground">Beam Size<InfoTip text="Number of candidate sequences the decoder explores at each step. Higher values (5-10) improve accuracy for difficult audio (accents, noise) but increase processing time linearly. Default of 5 works well for most meetings." /></Label>
                   <Input value={beamSize} onChange={(e) => set(setBeamSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Chunk Size</Label>
+                  <Label className="text-xs text-muted-foreground">Chunk Size<InfoTip text="Length of each audio segment in seconds sent to the model. 20-30s is typical. Shorter chunks (10-15s) can help with very noisy audio but may cut words at boundaries. Longer chunks (30s+) give more context but use more memory." /></Label>
                   <Input value={chunkSize} onChange={(e) => set(setChunkSize)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" />
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">CPU Threads<InfoTip text="Number of CPU threads used for processing. Only relevant when Device is set to 'CPU'. Set to your physical core count for best results — going higher than that gives diminishing returns due to context switching." /></Label>
+                  <Input value={threads} onChange={(e) => set(setThreads)(Number(e.target.value))} className="mt-1 bg-background font-mono text-sm" type="number" min={1} max={64} />
                 </div>
               </div>
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium">Speaker Diarization</p>
+                    <p className="text-sm font-medium">Speaker Diarization<InfoTip text="Uses pyannote.audio to detect and label different speakers in the recording. Essential for multi-person meetings — without it, all text is attributed to a single speaker. Adds ~10-20% to processing time." /></p>
                     <p className="text-xs text-muted-foreground">Use pyannote for speaker separation</p>
                   </div>
                   <Switch checked={diarization} onCheckedChange={set(setDiarization)} />
                 </div>
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium">VAD (Voice Activity Detection)</p>
+                    <p className="text-sm font-medium">VAD (Voice Activity Detection)<InfoTip text="Pre-filters silent segments before transcription using pyannote VAD. Reduces processing time by skipping silence and improves word-level timestamps. Recommended for recordings with long pauses or ambient noise." /></p>
                     <p className="text-xs text-muted-foreground">Use pyannote VAD for better segmentation</p>
                   </div>
                   <Switch checked={vad} onCheckedChange={set(setVad)} />
@@ -942,6 +1096,53 @@ volumes:
                     {allActivity.length === 0 ? "No activity yet. Upload a file to see events here." : "No activity found"}
                   </p>
                 )}
+              </div>
+            </section>
+          )}
+
+          {/* ── Appearance ── */}
+          {activeSection === "appearance" && (
+            <section className="space-y-6">
+              <div>
+                <p className="text-sm font-medium mb-3">Theme</p>
+                <p className="text-xs text-muted-foreground mb-4">Choose your preferred color scheme. Changes apply immediately.</p>
+                <div className="grid grid-cols-3 gap-3">
+                  {([
+                    { value: "dark", label: "Dark", icon: Moon, desc: "Easy on the eyes" },
+                    { value: "light", label: "Light", icon: Sun, desc: "Classic bright mode" },
+                    { value: "system", label: "System", icon: Monitor, desc: "Match OS setting" },
+                  ] as const).map((theme) => {
+                    const currentTheme = loadSetting("theme", "dark");
+                    const isActive = currentTheme === theme.value;
+                    return (
+                      <button
+                        key={theme.value}
+                        onClick={() => {
+                          saveSetting("theme", theme.value);
+                          // Apply theme immediately
+                          const root = document.documentElement;
+                          if (theme.value === "system") {
+                            const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+                            root.classList.toggle("dark", prefersDark);
+                          } else {
+                            root.classList.toggle("dark", theme.value === "dark");
+                          }
+                          toast.success(`Theme set to ${theme.label}`);
+                        }}
+                        className={cn(
+                          "flex flex-col items-center gap-2 rounded-lg border-2 p-4 transition-all",
+                          isActive
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-muted-foreground/30 hover:bg-secondary/30"
+                        )}
+                      >
+                        <theme.icon className={cn("h-5 w-5", isActive ? "text-primary" : "text-muted-foreground")} />
+                        <span className={cn("text-sm font-medium", isActive ? "text-primary" : "text-foreground")}>{theme.label}</span>
+                        <span className="text-[10px] text-muted-foreground">{theme.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </section>
           )}

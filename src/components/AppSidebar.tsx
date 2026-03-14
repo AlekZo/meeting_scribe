@@ -14,6 +14,7 @@ import {
   Upload,
 } from "lucide-react";
 import { loadSetting, saveSetting } from "@/lib/storage";
+import { SyncStatusIndicator } from "./SyncStatus";
 import { useState } from "react";
 import {
   Tooltip,
@@ -164,6 +165,11 @@ export function AppSidebar() {
               </>
             )}
           </button>
+        </div>
+
+        {/* Sync status */}
+        <div className={cn("border-t border-border py-2", collapsed ? "px-2 flex justify-center" : "px-3")}>
+          <SyncStatusIndicator compact={collapsed} />
         </div>
 
         {/* Status */}

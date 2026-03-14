@@ -83,9 +83,10 @@ if (typeof window !== "undefined") {
   });
 }
 
-/** Initial sync: pull all data from server into localStorage (server wins on conflicts via updated_at) */
-export async function initServerSync(): Promise<void> {
-  if (syncInitialized) return;
+/** Sync data from server into localStorage (server wins on conflicts via updated_at).
+ *  Pass force=true to re-sync even if already initialized (e.g. on page navigation). */
+export async function initServerSync(force = false): Promise<void> {
+  if (syncInitialized && !force) return;
 
   const available = await checkServer();
   if (!available) {

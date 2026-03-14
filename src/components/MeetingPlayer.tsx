@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Loader2 as LoaderIcon, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Play,
@@ -34,6 +35,7 @@ interface MeetingPlayerProps {
   date: string;
   mediaSrc?: string;
   mediaType?: "audio" | "video";
+  meetingStatus?: string;
   segments: TranscriptSegment[];
   onSpeakerRename?: (oldName: string, newName: string) => void;
   searchQuery?: string;
@@ -79,7 +81,7 @@ function formatTime(sec: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
-export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segments, onSpeakerRename, searchQuery, onSearchChange, searchResultCount }: MeetingPlayerProps) {
+export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", meetingStatus, segments, onSpeakerRename, searchQuery, onSearchChange, searchResultCount }: MeetingPlayerProps) {
   const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -96,6 +98,10 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   // Scrubbing state — prevents slider thumb fighting
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubTime, setScrubTime] = useState(0);
+
+  // Media loading / error states
+  const [mediaLoading, setMediaLoading] = useState(!!mediaSrc);
+  const [mediaError, setMediaError] = useState(false);
 
   // Auto-scroll state
   const [autoScroll, setAutoScroll] = useState(true);
@@ -177,6 +183,18 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
 
   const handleLoadedMetadata = useCallback(() => {
     if (mediaRef.current) setDuration(mediaRef.current.duration);
+    setMediaLoading(false);
+    setMediaError(false);
+  }, []);
+
+  const handleMediaError = useCallback(() => {
+    setMediaLoading(false);
+    setMediaError(true);
+  }, []);
+
+  const handleCanPlay = useCallback(() => {
+    setMediaLoading(false);
+    setMediaError(false);
   }, []);
 
   const handlePlay = useCallback(() => setIsPlaying(true), []);
@@ -243,16 +261,19 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Demo playback — use wall-clock time to prevent drift
+  // Demo playback — use wall-clock time to prevent drift.
+  // currentTime is included as a dependency so that seeking (which updates currentTime)
+  // restarts the interval with the new offset, preventing rubber-banding.
   const demoDuration = segments.length > 0 ? segments[segments.length - 1].endTime + 5 : 60;
+  const demoStartRef = useRef<{ wall: number; offset: number } | null>(null);
   useEffect(() => {
     if (!mediaSrc && isPlaying && !isScrubbing) {
       if (duration === 0) setDuration(demoDuration);
-      const startWall = Date.now();
-      const startOffset = currentTime;
+      demoStartRef.current = { wall: Date.now(), offset: currentTime };
       const interval = setInterval(() => {
-        const elapsed = (Date.now() - startWall) / 1000;
-        const newTime = startOffset + elapsed;
+        if (!demoStartRef.current) return;
+        const elapsed = (Date.now() - demoStartRef.current.wall) / 1000;
+        const newTime = demoStartRef.current.offset + elapsed;
         if (newTime >= demoDuration) {
           setIsPlaying(false);
           setCurrentTime(0);
@@ -268,6 +289,10 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
   const seekTo = (time: number) => {
     setCurrentTime(time);
     if (mediaRef.current) mediaRef.current.currentTime = time;
+    // Reset demo playback offset so interval uses new position
+    if (!mediaSrc && demoStartRef.current) {
+      demoStartRef.current = { wall: Date.now(), offset: time };
+    }
   };
 
   // Scrubbing handlers
@@ -331,16 +356,38 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
       {/* Video area */}
       {isVideo && (
         <div className="relative aspect-video bg-background flex items-center justify-center">
-          {mediaSrc ? (
-            <video
-              ref={mediaRef as React.RefObject<HTMLVideoElement>}
-              src={mediaSrc}
-              className="h-full w-full"
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onPlay={handlePlay}
-              onPause={handlePause}
-            />
+          {mediaSrc && !mediaError ? (
+            <>
+              <video
+                ref={mediaRef as React.RefObject<HTMLVideoElement>}
+                src={mediaSrc}
+                className="h-full w-full"
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onCanPlay={handleCanPlay}
+                onError={handleMediaError}
+                onPlay={handlePlay}
+                onPause={handlePause}
+              />
+              {mediaLoading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80">
+                  <LoaderIcon className="h-8 w-8 animate-spin text-muted-foreground" />
+                  <span className="text-xs font-mono text-muted-foreground mt-2">Loading media…</span>
+                </div>
+              )}
+            </>
+          ) : mediaError ? (
+            <div className="flex flex-col items-center gap-3 text-muted-foreground">
+              <AlertCircle className="h-10 w-10 text-destructive/60" />
+              <span className="text-sm font-mono">Failed to load video</span>
+              <span className="text-[10px] text-muted-foreground/60">The media file may be missing or still processing</span>
+            </div>
+          ) : meetingStatus === "transcribing" ? (
+            <div className="flex flex-col items-center gap-3 text-muted-foreground animate-pulse">
+              <Video className="h-12 w-12" />
+              <span className="text-sm font-mono">Processing Video…</span>
+              <span className="text-[10px] text-muted-foreground/60">Playback available once transcription completes</span>
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
               <Video className="h-12 w-12" />
@@ -357,6 +404,8 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
           src={mediaSrc}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
+          onCanPlay={handleCanPlay}
+          onError={handleMediaError}
           onPlay={handlePlay}
           onPause={handlePause}
         />
@@ -366,7 +415,16 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
       {!isVideo && !mediaSrc && (
         <div className="flex items-center justify-center gap-3 bg-secondary/20 py-6 text-muted-foreground">
           <Music className="h-8 w-8" />
-          <span className="text-sm font-mono">Audio Player — Demo Mode</span>
+          <span className="text-sm font-mono">
+            {meetingStatus === "transcribing" ? "Processing Audio…" : "Audio Player — Demo Mode"}
+          </span>
+        </div>
+      )}
+      {/* Audio error indicator */}
+      {!isVideo && mediaSrc && mediaError && (
+        <div className="flex items-center justify-center gap-3 bg-destructive/5 py-4 text-muted-foreground">
+          <AlertCircle className="h-5 w-5 text-destructive/60" />
+          <span className="text-sm font-mono">Failed to load audio — file may be missing</span>
         </div>
       )}
 
@@ -410,13 +468,13 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
 
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-1">
-            <button onClick={() => skip(-10)} title="Rewind 10s (←)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => skip(-10)} aria-label="Rewind 10 seconds" title="Rewind 10s (←)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
               <SkipBack className="h-4 w-4" />
             </button>
-            <button onClick={togglePlay} title={isPlaying ? "Pause (Space)" : "Play (Space)"} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+            <button onClick={togglePlay} aria-label={isPlaying ? "Pause" : "Play"} title={isPlaying ? "Pause (Space)" : "Play (Space)"} className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
               {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
             </button>
-            <button onClick={() => skip(10)} title="Forward 10s (→)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={() => skip(10)} aria-label="Forward 10 seconds" title="Forward 10s (→)" className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors">
               <SkipForward className="h-4 w-4" />
             </button>
             <span className="hidden lg:inline text-[9px] text-muted-foreground/50 font-mono ml-1">Space · ← → · M</span>
@@ -469,7 +527,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", segm
 
             {/* Volume — hidden on mobile (hardware buttons) */}
             <div className="hidden sm:flex items-center gap-2">
-              <button onClick={() => {
+              <button aria-label={isMuted ? "Unmute" : "Mute"} onClick={() => {
                 const next = !isMuted;
                 setIsMuted(next);
                 if (mediaRef.current) mediaRef.current.muted = next;

@@ -1,8 +1,8 @@
 import { useParams, useNavigate, NavLink } from "react-router-dom";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
-import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting } from "@/lib/storage";
-import { getAudioUrl } from "@/lib/scriberr";
+import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting, saveSetting, initServerSync } from "@/lib/storage";
+import { getAudioUrl, getScriberrJobUrl } from "@/lib/scriberr";
 import { autoTag } from "@/lib/auto-tagger";
 import { meetingIdFromSlug, meetingSlug, cn } from "@/lib/utils";
 import { callOpenRouter, callOpenRouterStreaming, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage, MissingApiKeyError, estimateCallCost, COST_WARNING_THRESHOLD } from "@/lib/openrouter";
@@ -107,8 +107,10 @@ function EditableText({
 }) {
   const handleBlur = () => {
     const trimmed = editValue.trim();
-    // If empty or invalid, treat blur as cancel
-    if (!trimmed || (validate && !validate(trimmed))) {
+    if (!trimmed) {
+      onCancel();
+    } else if (validate && !validate(trimmed)) {
+      toast.error("Invalid format — edit cancelled");
       onCancel();
     } else {
       onConfirm();
@@ -293,30 +295,43 @@ export default function MeetingDetailPage() {
 
   const cancelEdit = () => setEditingField(null);
 
-  // ── Reset state on navigation ──
+  // ── Force server sync then reset state on navigation ──
   useEffect(() => {
-    const ov = id ? loadMeetingOverrides(id) : {};
-    const stored = id ? loadTranscriptSegments(id) : null;
-    const allM = loadMeetings();
-    const m = allM.find((m) => String(m.id) === String(id));
-    setSegments(ov.segments ?? stored ?? m?.segments ?? []);
-    setFormData({
-      title: ov.title ?? m?.title ?? "",
-      date: ov.date ?? m?.date ?? "",
-      duration: ov.duration ?? m?.duration ?? "",
-      calUrl: ov.calendarUrl ?? m?.calendarEventUrl ?? "",
-      docUrl: ov.googleDocUrl ?? "",
-    });
-    setCategory(ov.category ?? m?.category);
-    setTags(ov.tags ?? m?.tags ?? []);
-    setActionItems(ov.actionItems ?? m?.actionItems ?? []);
-    setSummary(ov.summary ?? m?.summary);
-    const segs = ov.segments ?? stored ?? m?.segments ?? [];
-    const at = segs.length > 0 ? autoTag(segs, typeRules, categoryRules) : { meetingType: undefined, autoCategories: [] };
-    setMeetingType(ov.meetingType ?? m?.meetingType ?? at.meetingType);
-    setAutoCategories(ov.autoCategories ?? m?.autoCategories ?? at.autoCategories);
-    setEditingField(null);
-    setTranscriptSearch("");
+    let cancelled = false;
+
+    const loadState = () => {
+      if (cancelled) return;
+      const ov = id ? loadMeetingOverrides(id) : {};
+      const stored = id ? loadTranscriptSegments(id) : null;
+      const allM = loadMeetings();
+      const m = allM.find((m) => String(m.id) === String(id));
+      setSegments(ov.segments ?? stored ?? m?.segments ?? []);
+      setFormData({
+        title: ov.title ?? m?.title ?? "",
+        date: ov.date ?? m?.date ?? "",
+        duration: ov.duration ?? m?.duration ?? "",
+        calUrl: ov.calendarUrl ?? m?.calendarEventUrl ?? "",
+        docUrl: ov.googleDocUrl ?? "",
+      });
+      setCategory(ov.category ?? m?.category);
+      setTags(ov.tags ?? m?.tags ?? []);
+      setActionItems(ov.actionItems ?? m?.actionItems ?? []);
+      setSummary(ov.summary ?? m?.summary);
+      const segs = ov.segments ?? stored ?? m?.segments ?? [];
+      const at = segs.length > 0 ? autoTag(segs, typeRules, categoryRules) : { meetingType: undefined, autoCategories: [] };
+      setMeetingType(ov.meetingType ?? m?.meetingType ?? at.meetingType);
+      setAutoCategories(ov.autoCategories ?? m?.autoCategories ?? at.autoCategories);
+      setEditingField(null);
+      setTranscriptSearch("");
+    };
+
+    // Load immediately from cache, then re-sync from server and reload
+    loadState();
+    initServerSync(true).then(() => {
+      if (!cancelled) loadState();
+    }).catch(() => {});
+
+    return () => { cancelled = true; };
   }, [id]);
 
   // ── Handlers ──
@@ -348,13 +363,28 @@ export default function MeetingDetailPage() {
   const handleAutoCategoriesChange = (cats: string[]) => {
     setAutoCategories(cats);
     if (id) saveMeetingOverride(id, "autoCategories", cats);
+    // Persist custom categories globally for cross-meeting reuse
+    const existing = loadSetting<string[]>("custom_categories", []);
+    const merged = Array.from(new Set([...existing, ...cats]));
+    saveSetting("custom_categories", merged);
   };
 
   const handleSuggestTitle = async () => {
     if (!safeSegments.length) return;
     setIsSuggestingTitle(true);
     try {
-      const excerpt = safeSegments.slice(0, 30).map((s) => `[${s.speaker}]: ${s.text}`).join("\n");
+      // Use word-count limit (first ~1000 words) instead of segment count
+      // to ensure AI gets substantive content, not just greetings
+      let wordBudget = 1000;
+      const excerptLines: string[] = [];
+      for (const s of safeSegments) {
+        const line = `[${s.speaker}]: ${s.text}`;
+        const words = line.split(/\s+/).length;
+        excerptLines.push(line);
+        wordBudget -= words;
+        if (wordBudget <= 0) break;
+      }
+      const excerpt = excerptLines.join("\n");
       const result = await callOpenRouter("cleaning", [
         { role: "system", content: "You are a meeting title generator. Given a transcript excerpt, produce a short, descriptive meeting title (3-8 words). Reply with ONLY the title, no quotes, no explanation." },
         { role: "user", content: excerpt },
@@ -400,13 +430,22 @@ export default function MeetingDetailPage() {
           },
           { role: "user", content: transcript },
         ],
-        (streamedText) => setSummary(streamedText)
+        (streamedText) => {
+          // Strip JSON wrapper during streaming so user sees clean text
+          const clean = streamedText
+            .replace(/^\{\s*"summary"\s*:\s*"/, "")
+            .replace(/",?\s*"actionItems".*$/s, "")
+            .replace(/\\n/g, "\n")
+            .replace(/\\"/g, '"');
+          setSummary(clean);
+        }
       );
       if (id) trackMeetingUsage(id, result.usage);
       try {
         const parsed = JSON.parse(result.content);
         const newSummary = parsed.summary ?? result.content;
-        const newActions: ActionItem[] = (parsed.actionItems ?? []).map((a: any, i: number) => ({
+        const rawActions = Array.isArray(parsed.actionItems) ? parsed.actionItems : [];
+        const newActions: ActionItem[] = rawActions.map((a: any, i: number) => ({
           id: `gen_${Date.now()}_${i}`,
           assignee: a.assignee ?? "Unassigned",
           text: a.text ?? "",
@@ -483,7 +522,7 @@ export default function MeetingDetailPage() {
       )
     : safeSegments;
 
-  const showPipeline = meeting.status !== "completed";
+  
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] 2xl:grid-cols-[1fr_320px] 3xl:grid-cols-[1fr_380px] gap-6 2xl:gap-8">
@@ -869,6 +908,22 @@ export default function MeetingDetailPage() {
                 Link Doc
               </button>
             )}
+
+            {/* Open in Scriberr */}
+            {(() => {
+              const scriberrLink = getScriberrJobUrl(meeting.id);
+              return scriberrLink && !meeting.scriberrDeleted ? (
+                <a
+                  href={scriberrLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  Scriberr
+                </a>
+              ) : null;
+            })()}
           </div>
         </div>
 
@@ -882,26 +937,33 @@ export default function MeetingDetailPage() {
           autoCategories={autoCategories}
           onMeetingTypeChange={handleMeetingTypeChange}
           onAutoCategoriesChange={handleAutoCategoriesChange}
+          jobId={meeting.id}
+          scriberrDeleted={meeting.scriberrDeleted}
+          localMediaUrl={meeting.localMediaUrl}
         />
 
-        {/* Pipeline — only show when not completed */}
-        {showPipeline && (
-          <div className="rounded-lg border border-border/60 bg-card p-4">
-            <ProcessingPipeline
-              currentStage={pipelineStage}
-              failedStage={meeting.status === "error" ? "transcribing" : undefined}
-              onRetryStage={(stage) => {
-                if (stage === "publishing") {
-                  toast.info("Retrying publish to Google Sheets...");
-                } else if (stage === "transcribing") {
-                  toast.info("Retrying transcription via Scriberr...");
-                } else {
-                  toast.info(`Retrying ${stage}...`);
-                }
-              }}
-            />
-          </div>
-        )}
+        {/* Processing Pipeline — always visible */}
+        <div className="rounded-lg border border-border/60 bg-card p-4">
+          <ProcessingPipeline
+            currentStage={pipelineStage}
+            failedStage={meeting.status === "error" ? "transcribing" : undefined}
+            jobId={meeting.id}
+            resultInfo={{
+              segmentCount: totalSegments,
+              duration: formData.duration,
+              wordCount: wordCount,
+            }}
+            onRetryStage={(stage) => {
+              if (stage === "publishing") {
+                toast.info("Retrying publish to Google Sheets...");
+              } else if (stage === "transcribing") {
+                toast.info("Retrying transcription via Scriberr...");
+              } else {
+                toast.info(`Retrying ${stage}...`);
+              }
+            }}
+          />
+        </div>
 
         {/* AI Summary — borderless, flows into player */}
         <MeetingSummary
@@ -917,8 +979,9 @@ export default function MeetingDetailPage() {
         <MeetingPlayer
           title={formData.title}
           date={formData.date}
-          mediaSrc={meeting.mediaSrc || getAudioUrl(meeting.id)}
+          mediaSrc={meeting.localMediaUrl || meeting.mediaSrc || (meeting.status === "completed" ? getAudioUrl(meeting.id) : undefined)}
           mediaType={meeting.mediaType}
+          meetingStatus={meeting.status}
           segments={safeSegments}
           onSpeakerRename={handleSpeakerRename}
           searchQuery={transcriptSearch}

@@ -8,12 +8,15 @@ import multer from "multer";
 import { Readable } from "stream";
 import os from "os";
 import { registerGoogleRoutes } from "./google.mjs";
+import { registerTelegramRoutes } from "./telegram.mjs";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
+const MEDIA_DIR = path.join(DATA_DIR, "media");
 const PORT = process.env.PORT || 3001;
 
-// Ensure data directory exists
+// Ensure data directories exist
 fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 const dbPath = path.join(DATA_DIR, "meetscribe.db");
 const db = new Database(dbPath);
@@ -44,9 +47,41 @@ const upload = multer({
   limits: { fileSize: 200 * 1024 * 1024 },
 });
 
+// ── Serve permanent media files ──
+app.use("/api/media", express.static(MEDIA_DIR));
+
 // ── Health ──
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", dbPath, dataDir: DATA_DIR });
+  res.json({ status: "ok", dbPath, dataDir: DATA_DIR, mediaDir: MEDIA_DIR });
+});
+
+// ── Upload media to permanent storage ──
+app.post("/api/media/upload", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+  try {
+    const permanentPath = path.join(MEDIA_DIR, req.file.filename);
+    fs.renameSync(req.file.path, permanentPath);
+    res.json({
+      ok: true,
+      url: `/api/media/${req.file.filename}`,
+      filename: req.file.filename,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Delete a media file ──
+app.delete("/api/media/:filename", (req, res) => {
+  try {
+    const filePath = path.join(MEDIA_DIR, path.basename(req.params.filename));
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Get all key-value pairs ──
@@ -346,6 +381,9 @@ app.get("/api/storage", (_req, res) => {
 
 // ── Google integration ──
 registerGoogleRoutes(app, DATA_DIR, upload);
+
+// ── Telegram bot integration ──
+registerTelegramRoutes(app, db);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`MeetScribe API server running on port ${PORT}`);

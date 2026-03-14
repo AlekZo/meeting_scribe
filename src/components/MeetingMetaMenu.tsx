@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { MEETING_CATEGORIES, MeetingCategory } from "@/data/meetings";
-import { Tag, ChevronDown, X, Plus, Layers } from "lucide-react";
+import { Tag, ChevronDown, X, Plus, Layers, ExternalLink, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 
@@ -13,11 +13,15 @@ interface MeetingMetaMenuProps {
   autoCategories?: string[];
   onMeetingTypeChange?: (type: string | undefined) => void;
   onAutoCategoriesChange?: (categories: string[]) => void;
+  jobId?: string;
+  scriberrDeleted?: boolean;
+  localMediaUrl?: string;
 }
 
 export function MeetingMetaMenu({
   category, tags, onCategoryChange, onTagsChange,
   meetingType, autoCategories = [], onMeetingTypeChange, onAutoCategoriesChange,
+  jobId, scriberrDeleted, localMediaUrl,
 }: MeetingMetaMenuProps) {
   const [catOpen, setCatOpen] = useState(false);
   const [tagInput, setTagInput] = useState("");
@@ -198,6 +202,36 @@ export function MeetingMetaMenu({
           </button>
         )}
       </div>
+
+      {/* Scriberr / Media status */}
+      {jobId && (
+        <>
+          <div className="h-4 w-px bg-border" />
+          <div className="flex items-center gap-2">
+            {localMediaUrl && (
+              <span className="flex items-center gap-1 rounded-full bg-success/10 border border-success/20 px-2 py-0.5 text-[10px] font-medium text-success">
+                Local media
+              </span>
+            )}
+            {scriberrDeleted ? (
+              <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <AlertTriangle className="h-3 w-3" />
+                Cleaned from Scriberr
+              </span>
+            ) : (
+              <a
+                href={`/scriberr/audio/${jobId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+                Scriberr
+              </a>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

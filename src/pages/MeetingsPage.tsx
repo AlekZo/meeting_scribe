@@ -13,7 +13,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { format, parseISO, isSameDay } from "date-fns";
 import { useUpload, LANGUAGES } from "@/contexts/UploadContext";
-import { getAudioUrl } from "@/lib/scriberr";
+import { getAudioUrl, getScriberrJobUrl } from "@/lib/scriberr";
 import type { Meeting } from "@/data/meetings";
 
 export default function MeetingsPage() {
@@ -386,16 +386,19 @@ export default function MeetingsPage() {
                             </select>
                           </div>
                         )}
-                        {item.jobId && item.status === "completed" && (
-                          <a
-                            href={getAudioUrl(item.jobId)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[10px] text-primary hover:underline font-mono"
-                          >
-                            Scriberr
-                          </a>
-                        )}
+                        {item.jobId && item.status === "completed" && (() => {
+                          const link = getScriberrJobUrl(item.jobId);
+                          return link ? (
+                            <a
+                              href={link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10px] text-primary hover:underline font-mono"
+                            >
+                              Scriberr
+                            </a>
+                          ) : null;
+                        })()}
                         <button
                           onClick={() => removeFile(item.id)}
                           className="text-muted-foreground hover:text-destructive"

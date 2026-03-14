@@ -61,11 +61,12 @@ function generateTicks(totalDuration: number, maxTicks = 6): number[] {
 }
 
 export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek, meetingDate }: SpeakerTimelineProps) {
-  const speakers = useMemo(() => Array.from(new Set(segments.map((s) => s.speaker))), [segments]);
+  const safeSegments = segments || [];
+  const speakers = useMemo(() => Array.from(new Set(safeSegments.map((s) => s.speaker))), [safeSegments]);
   const meetingStart = useMemo(() => parseMeetingStart(meetingDate), [meetingDate]);
   const ticks = useMemo(() => generateTicks(totalDuration), [totalDuration]);
 
-  if (segments.length === 0 || totalDuration === 0) return null;
+  if (!safeSegments.length || totalDuration === 0) return null;
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -99,7 +100,7 @@ export function SpeakerTimeline({ segments, totalDuration, currentTime, onSeek, 
         className="relative h-8 rounded-md bg-secondary/40 cursor-pointer overflow-hidden border border-border"
         onClick={handleClick}
       >
-        {segments.map((seg, i) => {
+        {safeSegments.map((seg, i) => {
           const left = (seg.startTime / totalDuration) * 100;
           const width = ((seg.endTime - seg.startTime) / totalDuration) * 100;
           const speakerIdx = speakers.indexOf(seg.speaker);

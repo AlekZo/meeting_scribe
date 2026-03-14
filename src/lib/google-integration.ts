@@ -31,17 +31,63 @@ export function parseDateFromFilename(filename: string): string | null {
   return null;
 }
 
-/** Query Google Calendar for events on a given date and find the best match */
+/** Extract datetime with time component from filename for precise calendar matching.
+ *  Handles timezone conversion: filenames are typically in local time. */
+export function parseDateTimeFromFilename(filename: string): { date: string; timeUtc?: string } | null {
+  const name = filename.replace(/\.[^.]+$/, "");
+
+  // Match: 2026-02-19_14-30-00 or 2026.02.19.14.30.00 or 20260219_143000
+  const dtMatch = name.match(/(\d{4})[\-._]?(\d{2})[\-._]?(\d{2})[\-._\s]?(\d{2})[\-._:]?(\d{2})[\-._:]?(\d{2})?/);
+  if (dtMatch) {
+    const [, y, mo, d, h, mi, s = "00"] = dtMatch;
+    const date = `${y}-${mo}-${d}`;
+
+    // Convert local time to UTC using browser timezone
+    const timezone = loadSetting("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+    try {
+      // Create a date in the user's timezone
+      const localStr = `${y}-${mo}-${d}T${h}:${mi}:${s}`;
+      const localDate = new Date(localStr);
+      // Get the offset for this timezone
+      const formatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "shortOffset" });
+      const parts = formatter.formatToParts(localDate);
+      const offsetPart = parts.find(p => p.type === "timeZoneName");
+      // Return both date and the local time (API will handle timezone conversion)
+      return { date, timeUtc: `${h}:${mi}:${s}` };
+    } catch {
+      return { date };
+    }
+  }
+
+  // Fallback to date-only
+  const dateOnly = parseDateFromFilename(filename);
+  if (dateOnly) return { date: dateOnly };
+  return null;
+}
+
+export interface CalendarEvent {
+  title: string;
+  start: string;
+  end: string;
+  attendees: string[];
+  eventId?: string;
+  eventUrl?: string;
+  accepted?: boolean;
+}
+
+/** Query Google Calendar for events on a given date and find the best match.
+ *  Returns null gracefully if offline, not configured, or no match found. */
 export async function matchCalendarEvent(
   filename: string,
   date: string,
-): Promise<{ title: string; start: string; end: string; attendees: string[] } | null> {
+): Promise<CalendarEvent | null> {
   const calendarId = loadSetting("google_calendar_id", "primary");
-  const timezone = loadSetting("timezone", "Europe/Moscow");
+  const timezone = loadSetting("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   try {
     const res = await fetch(
       `${API_BASE}/google/calendar/events?calendarId=${encodeURIComponent(calendarId)}&date=${encodeURIComponent(date)}&timezone=${encodeURIComponent(timezone)}`,
+      { signal: AbortSignal.timeout(8000) },
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -56,8 +102,10 @@ export async function matchCalendarEvent(
     let bestScore = 0;
 
     for (const event of data.events) {
-      const words = event.summary.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
-      const score = words.filter((w: string) => nameLower.includes(w)).length;
+      const words = (event.title || event.summary || "").toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
+      let score = words.filter((w: string) => nameLower.includes(w)).length;
+      // Prefer accepted events over tentative/declined
+      if (event.accepted) score += 2;
       if (score > bestScore) {
         bestScore = score;
         bestMatch = event;
@@ -68,6 +116,24 @@ export async function matchCalendarEvent(
   } catch (err) {
     console.warn("[google] Calendar match failed:", err);
     return null;
+  }
+}
+
+/** Get all matching calendar events (for UI disambiguation when multiple matches) */
+export async function getCalendarEvents(date: string): Promise<CalendarEvent[]> {
+  const calendarId = loadSetting("google_calendar_id", "primary");
+  const timezone = loadSetting("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/google/calendar/events?calendarId=${encodeURIComponent(calendarId)}&date=${encodeURIComponent(date)}&timezone=${encodeURIComponent(timezone)}`,
+      { signal: AbortSignal.timeout(8000) },
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.events ?? [];
+  } catch {
+    return [];
   }
 }
 

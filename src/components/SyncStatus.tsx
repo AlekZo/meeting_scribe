@@ -39,7 +39,7 @@ export function useSyncStatus() {
   return { status, detail };
 }
 
-export function SyncStatusIndicator() {
+export function SyncStatusIndicator({ compact }: { compact?: boolean }) {
   const { status, detail } = useSyncStatus();
 
   const icon = (() => {

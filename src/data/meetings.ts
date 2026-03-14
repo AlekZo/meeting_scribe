@@ -36,6 +36,8 @@ export interface Meeting {
   source: "Upload" | "Telegram";
   mediaType: "audio" | "video";
   mediaSrc?: string;
+  localMediaUrl?: string; // permanent local media path (e.g. /api/media/filename.mp3)
+  scriberrDeleted?: boolean; // true if processing data was cleaned from Scriberr
   calendarEventUrl?: string;
   calendarEventId?: string;
   category?: MeetingCategory;
@@ -50,6 +52,8 @@ export interface Meeting {
   transcribeStartTime?: number; // Date.now() when transcription started
   whisperModel?: string;
   whisperDevice?: string;
+  language?: string; // transcript language from Scriberr
+  calendarAttendees?: string[]; // attendees from Google Calendar for speaker ID hints
   segments: TranscriptSegment[];
 }
 
