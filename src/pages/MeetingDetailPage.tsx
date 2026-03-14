@@ -990,7 +990,7 @@ export default function MeetingDetailPage() {
         <MeetingPlayer
           title={formData.title}
           date={formData.date}
-          mediaSrc={meeting.localMediaUrl || meeting.mediaSrc || (meeting.status === "completed" ? getAudioUrl(meeting.id) : undefined)}
+          mediaSrc={meeting.localMediaUrl || meeting.mediaSrc || (meeting.status === "completed" || meeting.status === "transcribing" ? getAudioUrl(meeting.id) : undefined)}
           mediaType={meeting.mediaType}
           meetingStatus={meeting.status}
           segments={safeSegments}

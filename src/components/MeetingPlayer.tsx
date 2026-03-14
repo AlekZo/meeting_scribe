@@ -388,12 +388,6 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", meet
               <span className="text-sm font-mono">Failed to load video</span>
               <span className="text-[10px] text-muted-foreground/60">The media file may be missing or still processing</span>
             </div>
-          ) : meetingStatus === "transcribing" ? (
-            <div className="flex flex-col items-center gap-3 text-muted-foreground animate-pulse">
-              <Video className="h-12 w-12" />
-              <span className="text-sm font-mono">Processing Video…</span>
-              <span className="text-[10px] text-muted-foreground/60">Playback available once transcription completes</span>
-            </div>
           ) : (
             <div className="flex flex-col items-center gap-3 text-muted-foreground">
               <Video className="h-12 w-12" />
@@ -421,9 +415,7 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", meet
       {!isVideo && !mediaSrc && (
         <div className="flex items-center justify-center gap-3 bg-secondary/20 py-6 text-muted-foreground">
           <Music className="h-8 w-8" />
-          <span className="text-sm font-mono">
-            {meetingStatus === "transcribing" ? "Processing Audio…" : "Audio Player — Demo Mode"}
-          </span>
+          <span className="text-sm font-mono">Audio Player — Demo Mode</span>
         </div>
       )}
       {/* Audio error indicator */}
@@ -605,8 +597,16 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", meet
           className="max-h-[420px] 2xl:max-h-[560px] 3xl:max-h-[720px] overflow-y-auto scroll-smooth"
         >
           {segments.length === 0 && (
-            <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
-              No transcript available yet
+            <div className="flex flex-col items-center justify-center py-16 gap-2 text-sm text-muted-foreground">
+              {meetingStatus === "transcribing" ? (
+                <>
+                  <LoaderIcon className="h-5 w-5 animate-spin text-info" />
+                  <span>Transcription in progress…</span>
+                  <span className="text-[10px] text-muted-foreground/60">You can listen to the recording while waiting</span>
+                </>
+              ) : (
+                <span>No transcript available yet</span>
+              )}
             </div>
           )}
           {groupedSegments.map((group, gi) => (
