@@ -379,6 +379,94 @@ app.get("/api/storage", (_req, res) => {
   }
 });
 
+// ── Scriberr authenticated stream proxy ──
+// Native <audio>/<video> tags can't send auth headers, so we proxy the stream
+// through our server which injects the API key / Bearer token.
+app.get("/api/scriberr-stream/:jobId", async (req, res) => {
+  try {
+    // Read Scriberr config from the store (same keys the frontend uses)
+    const getVal = (key) => {
+      const row = db.prepare("SELECT value FROM store WHERE key = ?").get(key);
+      if (!row) return "";
+      try { return JSON.parse(row.value); } catch { return row.value; }
+    };
+
+    const customUrl = getVal("meetscribe_scriberr_url") || "";
+    const protocol = getVal("meetscribe_scriberr_protocol") || "http";
+    const apiKey = getVal("meetscribe_scriberr_api_key") || "";
+    const authMethod = getVal("meetscribe_scriberr_auth_method") || "x-api-key";
+
+    // Build upstream URL
+    let upstream;
+    if (customUrl) {
+      const host = customUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+      upstream = `${protocol}://${host}`;
+    } else {
+      // Docker internal: use the same host nginx proxies to
+      upstream = process.env.SCRIBERR_URL || "http://scriberr-blackwell:8080";
+    }
+
+    const streamUrl = `${upstream}/audio/${encodeURIComponent(req.params.jobId)}`;
+
+    // Build auth headers
+    const proxyHeaders = {};
+    if (apiKey) {
+      if (authMethod === "bearer") {
+        proxyHeaders["Authorization"] = `Bearer ${apiKey}`;
+      } else {
+        proxyHeaders["X-API-Key"] = apiKey;
+      }
+    }
+
+    // Support range requests for seeking
+    if (req.headers.range) {
+      proxyHeaders["Range"] = req.headers.range;
+    }
+
+    const upstream_res = await fetch(streamUrl, { headers: proxyHeaders });
+
+    if (!upstream_res.ok) {
+      return res.status(upstream_res.status).json({
+        error: `Scriberr returned ${upstream_res.status}`,
+      });
+    }
+
+    // Forward content headers
+    const ct = upstream_res.headers.get("content-type");
+    if (ct) res.setHeader("Content-Type", ct);
+    const cl = upstream_res.headers.get("content-length");
+    if (cl) res.setHeader("Content-Length", cl);
+    const cr = upstream_res.headers.get("content-range");
+    if (cr) res.setHeader("Content-Range", cr);
+    const ar = upstream_res.headers.get("accept-ranges");
+    if (ar) res.setHeader("Accept-Ranges", ar);
+
+    // Set status (206 for partial content)
+    res.status(upstream_res.status);
+
+    // Pipe the body
+    const reader = upstream_res.body?.getReader();
+    if (!reader) return res.end();
+
+    const pump = async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { res.end(); return; }
+        if (!res.write(value)) {
+          await new Promise((resolve) => res.once("drain", resolve));
+        }
+      }
+    };
+    pump().catch((err) => {
+      console.warn("[scriberr-stream] Pipe error:", err.message);
+      res.end();
+    });
+  } catch (err) {
+    console.error("[scriberr-stream] Proxy error:", err);
+    res.status(502).json({ error: err.message });
+  }
+});
+
 // ── Google integration ──
 registerGoogleRoutes(app, DATA_DIR, upload);
 

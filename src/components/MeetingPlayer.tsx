@@ -182,7 +182,13 @@ export function MeetingPlayer({ title, date, mediaSrc, mediaType = "audio", meet
   }, [isScrubbing]);
 
   const handleLoadedMetadata = useCallback(() => {
-    if (mediaRef.current) setDuration(mediaRef.current.duration);
+    if (mediaRef.current) {
+      const d = mediaRef.current.duration;
+      // Guard against Infinity/NaN from VBR files — fall back to transcript-based duration
+      if (Number.isFinite(d) && d > 0) {
+        setDuration(d);
+      }
+    }
     setMediaLoading(false);
     setMediaError(false);
   }, []);

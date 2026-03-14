@@ -43,6 +43,7 @@ const sections: SectionDef[] = [
   { id: "scriberr", label: "Scriberr API", icon: Cpu, group: "Integrations" },
   { id: "telegram", label: "Telegram Bot", icon: MessageCircle, group: "Integrations" },
   { id: "google", label: "Google", icon: FileSpreadsheet, group: "Integrations" },
+  { id: "google-calendar", label: "Google Calendar", icon: FileSpreadsheet, group: "Integrations" },
   { id: "ai-routing", label: "AI Model Routing", icon: Bot, group: "AI & Processing" },
   { id: "ai-prompts", label: "AI Prompts", icon: Sparkles, group: "AI & Processing" },
   { id: "processing", label: "Processing", icon: Zap, group: "AI & Processing" },
@@ -136,6 +137,8 @@ export default function SettingsPage() {
   const [googleCalMatch, setGoogleCalMatch] = useState(() => loadSetting("google_cal_match", true));
   const [timezone, setTimezone] = useState(() => loadSetting("timezone", "Europe/Moscow"));
   const [googleStatus, setGoogleStatus] = useState<ConnectionStatus>("untested");
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [googleSaEmail, setGoogleSaEmail] = useState<string | null>(null);
   const saFileRef = useRef<HTMLInputElement>(null);
 
@@ -759,7 +762,83 @@ export default function SettingsPage() {
             </section>
           )}
 
-          {/* ── AI Model Routing ── */}
+          {/* ── Google Calendar Preview ── */}
+          {activeSection === "google-calendar" && (
+            <section className="space-y-4">
+              <div className="rounded-md border border-border p-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Calendar Events Preview</Label>
+                  <Button size="sm" variant="outline" className="text-xs gap-1.5" onClick={async () => {
+                    setCalendarLoading(true);
+                    setCalendarEvents([]);
+                    try {
+                      const calId = googleCalId || "primary";
+                      const today = new Date().toISOString().slice(0, 10);
+                      const res = await fetch(`/api/google/calendar/events?calendarId=${encodeURIComponent(calId)}&date=${today}`);
+                      const data = await res.json();
+                      if (res.ok && data.events) {
+                        setCalendarEvents(data.events);
+                        if (data.events.length === 0) toast.info("No events found for today");
+                      } else {
+                        toast.error(data.error || "Failed to fetch events");
+                      }
+                    } catch (err: any) {
+                      toast.error(`Failed: ${err.message}`);
+                    } finally {
+                      setCalendarLoading(false);
+                    }
+                  }}>
+                    {calendarLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Fetch Today's Events
+                  </Button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Shows events from your configured Google Calendar. Uses the same Calendar ID and Service Account from the Google settings section.
+                </p>
+              </div>
+
+              {calendarEvents.length > 0 && (
+                <div className="rounded-md border border-border overflow-hidden">
+                  <div className="bg-secondary/30 px-3 py-2 text-xs font-medium text-muted-foreground border-b border-border">
+                    {calendarEvents.length} event{calendarEvents.length !== 1 ? "s" : ""} found
+                  </div>
+                  <div className="divide-y divide-border">
+                    {calendarEvents.map((evt: any, i: number) => (
+                      <div key={i} className="px-3 py-2.5 flex items-start gap-3 hover:bg-secondary/20 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{evt.summary || "Untitled"}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[10px] font-mono text-muted-foreground">
+                              {evt.start ? new Date(evt.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                              {" → "}
+                              {evt.end ? new Date(evt.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}
+                            </span>
+                            {evt.attendees && evt.attendees.length > 0 && (
+                              <span className="text-[10px] text-muted-foreground/60">{evt.attendees.length} attendees</span>
+                            )}
+                          </div>
+                        </div>
+                        {evt.htmlLink && (
+                          <a href={evt.htmlLink} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground transition-colors shrink-0 mt-0.5">
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {!calendarLoading && calendarEvents.length === 0 && (
+                <div className="rounded-md border border-dashed border-border p-6 text-center">
+                  <p className="text-sm text-muted-foreground">Click "Fetch Today's Events" to preview your calendar</p>
+                  <p className="text-[10px] text-muted-foreground/60 mt-1">Make sure Google integration is configured in the Google settings section</p>
+                </div>
+              )}
+            </section>
+          )}
+
+
           {activeSection === "ai-routing" && <AIModelRoutingSection />}
 
           {/* ── AI Prompts ── */}

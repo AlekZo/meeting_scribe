@@ -397,11 +397,13 @@ export function convertSegmentsRaw(scriberrData: any): TranscriptSegment[] {
   return resolveSegments(scriberrData).map(safeSegment);
 }
 
-/** Get the audio file streaming URL for a job — prefers local media if available */
+/** Get the audio file streaming URL for a job — prefers local media if available.
+ *  Falls back to our authenticated proxy to avoid CORS & auth header issues
+ *  with native <audio>/<video> tags. */
 export function getAudioUrl(jobId: string, localMediaSrc?: string): string {
   if (localMediaSrc) return localMediaSrc;
-  const { baseUrl } = getConfig();
-  return `${baseUrl}/audio/${encodeURIComponent(jobId)}`;
+  // Use our Express proxy which injects Scriberr auth headers server-side
+  return `/api/scriberr-stream/${encodeURIComponent(jobId)}`;
 }
 
 /** Get a direct browser-accessible Scriberr UI link for a job.

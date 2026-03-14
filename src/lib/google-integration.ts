@@ -9,10 +9,9 @@ const API_BASE = "/api";
 
 /** Try to extract a date from the filename (common patterns) */
 export function parseDateFromFilename(filename: string): string | null {
-  // Remove extension
   const name = filename.replace(/\.[^.]+$/, "");
 
-  // Match patterns like: 2026-03-12, 2026.03.12, 2026_03_12, 20260312
+  // ISO: 2026-03-12, 2026.03.12, 2026_03_12, 20260312
   const isoMatch = name.match(/(\d{4})[\-._]?(\d{2})[\-._]?(\d{2})/);
   if (isoMatch) {
     const [, y, m, d] = isoMatch;
@@ -20,48 +19,102 @@ export function parseDateFromFilename(filename: string): string | null {
     if (!isNaN(date.getTime())) return `${y}-${m}-${d}`;
   }
 
-  // Match patterns like: 12-03-2026, 12.03.2026 (DD-MM-YYYY)
-  const euMatch = name.match(/(\d{2})[\-._](\d{2})[\-._](\d{4})/);
+  // EU: 22.01.2026, 22-01-2026, 22/01/2026 (DD-MM-YYYY)
+  const euMatch = name.match(/(\d{2})[\-._\/](\d{2})[\-._\/](\d{4})/);
   if (euMatch) {
     const [, d, m, y] = euMatch;
     const date = new Date(`${y}-${m}-${d}`);
     if (!isNaN(date.getTime())) return `${y}-${m}-${d}`;
   }
 
+  // DD_Mon_YY: 18_Feb_26
+  const monMatch = name.match(/(\d{1,2})_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)_(\d{2})/i);
+  if (monMatch) {
+    const months: Record<string, string> = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
+    const d = monMatch[1].padStart(2, "0");
+    const m = months[monMatch[2].toLowerCase()];
+    const y = `20${monMatch[3]}`;
+    if (m) return `${y}-${m}-${d}`;
+  }
+
+  // Short: YYMMDDHHMM (10 digits)
+  const shortMatch = name.match(/(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if (shortMatch) {
+    const [, yy, mo, dd] = shortMatch;
+    const y = `20${yy}`;
+    const date = new Date(`${y}-${mo}-${dd}`);
+    if (!isNaN(date.getTime())) return `${y}-${mo}-${dd}`;
+  }
+
   return null;
 }
 
 /** Extract datetime with time component from filename for precise calendar matching.
- *  Handles timezone conversion: filenames are typically in local time. */
-export function parseDateTimeFromFilename(filename: string): { date: string; timeUtc?: string } | null {
+ *  Supports ISO, EU (DD.MM.YYYY), DD_Mon_YY, and YYMMDDHHMM patterns.
+ *  If no date found in filename, falls back to File.lastModified when available. */
+export function parseDateTimeFromFilename(
+  filename: string,
+  fileLastModified?: number,
+): { date: string; timeUtc?: string } | null {
   const name = filename.replace(/\.[^.]+$/, "");
 
-  // Match: 2026-02-19_14-30-00 or 2026.02.19.14.30.00 or 20260219_143000
+  // 1. ISO with time: 2026-02-19_14-30-00, 2026.02.19.14.30.00, 20260219_143000
   const dtMatch = name.match(/(\d{4})[\-._]?(\d{2})[\-._]?(\d{2})[\-._\s]?(\d{2})[\-._:]?(\d{2})[\-._:]?(\d{2})?/);
   if (dtMatch) {
     const [, y, mo, d, h, mi, s = "00"] = dtMatch;
     const date = `${y}-${mo}-${d}`;
+    return { date, timeUtc: `${h}:${mi}:${s}` };
+  }
 
-    // Convert local time to UTC using browser timezone
-    const timezone = loadSetting("timezone", Intl.DateTimeFormat().resolvedOptions().timeZone);
-    try {
-      // Create a date in the user's timezone
-      const localStr = `${y}-${mo}-${d}T${h}:${mi}:${s}`;
-      const localDate = new Date(localStr);
-      // Get the offset for this timezone
-      const formatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "shortOffset" });
-      const parts = formatter.formatToParts(localDate);
-      const offsetPart = parts.find(p => p.type === "timeZoneName");
-      // Return both date and the local time (API will handle timezone conversion)
-      return { date, timeUtc: `${h}:${mi}:${s}` };
-    } catch {
-      return { date };
+  // 2. EU with optional time: 22-01-2026_14-30-00 or 22.01.2026
+  const euDtMatch = name.match(/(\d{2})[\-._\/](\d{2})[\-._\/](\d{4})(?:[\-._T\s](\d{2})[\-._:](\d{2})(?:[\-._:](\d{2}))?)?/);
+  if (euDtMatch) {
+    const [, dd, mm, yyyy, h, mi, s] = euDtMatch;
+    const date = `${yyyy}-${mm}-${dd}`;
+    if (h && mi) return { date, timeUtc: `${h}:${mi}:${s || "00"}` };
+    return { date };
+  }
+
+  // 3. DD_Mon_YY: 18_Feb_26
+  const monMatch = name.match(/(\d{1,2})_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)_(\d{2})/i);
+  if (monMatch) {
+    const months: Record<string, string> = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
+    const d = monMatch[1].padStart(2, "0");
+    const m = months[monMatch[2].toLowerCase()];
+    const y = `20${monMatch[3]}`;
+    if (m) return { date: `${y}-${m}-${d}` };
+  }
+
+  // 4. Short YYMMDDHHMM (10 digits)
+  const shortMatch = name.match(/(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  if (shortMatch) {
+    const [, yy, mo, dd, hh, mi] = shortMatch;
+    const y = `20${yy}`;
+    const testDate = new Date(`${y}-${mo}-${dd}`);
+    if (!isNaN(testDate.getTime())) {
+      return { date: `${y}-${mo}-${dd}`, timeUtc: `${hh}:${mi}:00` };
     }
   }
 
-  // Fallback to date-only
+  // 5. Fallback: date-only from filename
   const dateOnly = parseDateFromFilename(filename);
   if (dateOnly) return { date: dateOnly };
+
+  // 6. OS Timestamp Fallback: use File.lastModified when no date in filename
+  if (fileLastModified) {
+    const dt = new Date(fileLastModified);
+    if (!isNaN(dt.getTime())) {
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, "0");
+      const d = String(dt.getDate()).padStart(2, "0");
+      const h = String(dt.getHours()).padStart(2, "0");
+      const mi = String(dt.getMinutes()).padStart(2, "0");
+      const s = String(dt.getSeconds()).padStart(2, "0");
+      console.info(`[google] No date in filename "${filename}", falling back to OS timestamp: ${y}-${m}-${d} ${h}:${mi}:${s}`);
+      return { date: `${y}-${m}-${d}`, timeUtc: `${h}:${mi}:${s}` };
+    }
+  }
+
   return null;
 }
 

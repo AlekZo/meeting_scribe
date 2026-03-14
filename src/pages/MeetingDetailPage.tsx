@@ -8,6 +8,7 @@ import { meetingIdFromSlug, meetingSlug, cn } from "@/lib/utils";
 import { callOpenRouter, callOpenRouterStreaming, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage, MissingApiKeyError, estimateCallCost, COST_WARNING_THRESHOLD } from "@/lib/openrouter";
 import { toast } from "sonner";
 import { MeetingPlayer, TranscriptSegment } from "@/components/MeetingPlayer";
+import { useUpload } from "@/contexts/UploadContext";
 import { ProcessingPipeline, PipelineStage } from "@/components/ProcessingPipeline";
 import { TranscriptExport } from "@/components/TranscriptExport";
 import { MeetingMetaMenu } from "@/components/MeetingMetaMenu";
@@ -169,6 +170,7 @@ function parseUrl(raw: string): string | null {
 export default function MeetingDetailPage() {
   const { id: slugParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { cancelJob } = useUpload();
   const allMeetings = useMemo(() => loadMeetings(), []);
 
   const meeting = useMemo(() => {
@@ -731,7 +733,16 @@ export default function MeetingDetailPage() {
                       </AlertDialogHeader>
                       <AlertDialogFooter>
                         <AlertDialogCancel>Keep Running</AlertDialogCancel>
-                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                        <AlertDialogAction
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          onClick={async () => {
+                            if (id) {
+                              await cancelJob(id);
+                              toast.success("Transcription cancelled and Scriberr job deleted");
+                              navigate("/meetings");
+                            }
+                          }}
+                        >
                           Cancel Transcription
                         </AlertDialogAction>
                       </AlertDialogFooter>

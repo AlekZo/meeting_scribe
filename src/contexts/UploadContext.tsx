@@ -7,6 +7,7 @@ import {
   startTranscription,
   getTranscript,
   convertSegments,
+  deleteScriberrJob,
 } from "@/lib/scriberr";
 import { notifyTranscriptionComplete, notifyTranscriptionError, notifyUploadStarted } from "@/lib/telegram";
 import PollWorker from "@/workers/poll-worker?worker";
@@ -81,6 +82,7 @@ interface UploadContextValue {
   removeFile: (id: string) => void;
   setLanguage: (id: string, lang: string) => void;
   startTranscription: () => Promise<void>;
+  cancelJob: (meetingId: string) => Promise<void>;
   activeCount: number;
   queuedCount: number;
   onMeetingsChanged?: () => void;
@@ -175,6 +177,42 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     }
     jobMetaRef.current.delete(id);
     setQueue((prev) => prev.filter((f) => f.id !== id));
+  }, []);
+
+  /** Cancel a transcription job: stop polling, delete from Scriberr, update meeting status */
+  const cancelJob = useCallback(async (meetingId: string) => {
+    // Stop any active pollers for this meeting
+    for (const [queueId, _] of pollingRef.current) {
+      const meta = jobMetaRef.current.get(queueId);
+      if (meta?.jobId === meetingId) {
+        workerRef.current?.postMessage({ type: "stop", queueId });
+        pollingRef.current.delete(queueId);
+        jobMetaRef.current.delete(queueId);
+      }
+    }
+    // Remove from queue UI
+    setQueue((prev) => prev.filter((f) => f.jobId !== meetingId));
+
+    // Delete from Scriberr server
+    try {
+      const deleted = await deleteScriberrJob(meetingId);
+      if (deleted) {
+        appendActivity({ type: "transcription", message: `Cancelled & deleted Scriberr job: ${meetingId}` });
+      } else {
+        console.warn(`[cancel] Scriberr delete returned false for ${meetingId}`);
+      }
+    } catch (err: any) {
+      console.warn(`[cancel] Failed to delete Scriberr job ${meetingId}:`, err.message);
+    }
+
+    // Update local meeting status to "error" so user knows it was cancelled
+    const meetings = loadMeetings();
+    const idx = meetings.findIndex((m) => String(m.id) === String(meetingId));
+    if (idx >= 0) {
+      meetings[idx] = { ...meetings[idx], status: "error" };
+      saveMeetings(meetings);
+      onMeetingsChangedRef.current?.();
+    }
   }, []);
 
   const setLanguage = useCallback((id: string, lang: string) => {
@@ -363,7 +401,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       const calMatch = loadSetting("google_cal_match", true);
       if (calMatch && isOnline()) {
         try {
-          const parsed = parseDateTimeFromFilename(item.file.name);
+          const parsed = parseDateTimeFromFilename(item.file.name, item.file.lastModified);
           if (parsed) {
             meetingDate = parsed.date;
             const event = await matchCalendarEvent(item.file.name, parsed.date);
@@ -544,6 +582,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
         removeFile,
         setLanguage,
         startTranscription: startTranscriptionFn,
+        cancelJob,
         activeCount,
         queuedCount,
         onMeetingsChanged: onMeetingsChangedRef.current,
