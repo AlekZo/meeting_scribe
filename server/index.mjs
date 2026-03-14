@@ -7,6 +7,7 @@ import unzipper from "unzipper";
 import multer from "multer";
 import { Readable } from "stream";
 import os from "os";
+import { registerGoogleRoutes } from "./google.mjs";
 
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const PORT = process.env.PORT || 3001;
@@ -110,6 +111,16 @@ app.post("/api/store/bulk", (req, res) => {
 app.delete("/api/store/:key", (req, res) => {
   try {
     db.prepare("DELETE FROM store WHERE key = ?").run(req.params.key);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Clear all data ──
+app.delete("/api/store", (_req, res) => {
+  try {
+    db.prepare("DELETE FROM store").run();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -296,6 +307,45 @@ app.get("/api/info", (_req, res) => {
     dbSize: fs.statSync(dbPath).size,
   });
 });
+
+// ── Storage info: list files in data volume ──
+app.get("/api/storage", (_req, res) => {
+  try {
+    const walkDir = (dir, prefix = "") => {
+      const results = [];
+      const items = fs.readdirSync(dir, { withFileTypes: true });
+      for (const item of items) {
+        const relPath = prefix ? `${prefix}/${item.name}` : item.name;
+        if (item.isDirectory()) {
+          results.push(...walkDir(path.join(dir, item.name), relPath));
+        } else {
+          const stat = fs.statSync(path.join(dir, item.name));
+          results.push({
+            path: relPath,
+            size: stat.size,
+            modified: stat.mtime.toISOString(),
+          });
+        }
+      }
+      return results;
+    };
+
+    const files = walkDir(DATA_DIR);
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+
+    res.json({
+      dataDir: DATA_DIR,
+      totalSize,
+      fileCount: files.length,
+      files,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Google integration ──
+registerGoogleRoutes(app, DATA_DIR, upload);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`MeetScribe API server running on port ${PORT}`);

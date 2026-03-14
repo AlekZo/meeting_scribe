@@ -47,6 +47,9 @@ export interface Meeting {
   tokensSpent?: number;
   estimatedCost?: number;
   fileSize?: number; // bytes
+  transcribeStartTime?: number; // Date.now() when transcription started
+  whisperModel?: string;
+  whisperDevice?: string;
   segments: TranscriptSegment[];
 }
 

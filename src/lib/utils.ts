@@ -16,13 +16,13 @@ export function meetingSlug(title: string, id: string): string {
   return `${slug}-${id}`;
 }
 
-/** Extract the meeting id from a slug (last segment after final hyphen matching id pattern) */
+/** Extract the meeting id from a slug (supports UUID-style ids and short ids) */
 export function meetingIdFromSlug(slug: string): string {
-  // The id is appended after the last hyphen: "some-title-m6" → "m6"
-  // For imported meetings with uuid-style ids, grab everything after last known separator
+  // Check for UUID pattern at the end (8-4-4-4-12 hex)
+  const uuidMatch = slug.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (uuidMatch) return uuidMatch[1];
+  // Fallback: last segment after final hyphen
   const lastDash = slug.lastIndexOf("-");
   if (lastDash === -1) return slug;
-  const candidate = slug.slice(lastDash + 1);
-  // If the candidate looks like an id (starts with 'm' + digit, or is alphanumeric), use it
-  return candidate || slug;
+  return slug.slice(lastDash + 1) || slug;
 }

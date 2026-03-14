@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react";
+import { loadSetting as loadSettingDirect } from "@/lib/storage";
 import { toast } from "sonner";
 import {
   uploadAudio,
@@ -10,6 +11,7 @@ import {
   getAudioUrl,
 } from "@/lib/scriberr";
 import { loadMeetings, saveMeetings, saveTranscriptSegments, loadSetting, appendActivity } from "@/lib/storage";
+import { parseDateFromFilename, matchCalendarEvent, syncTranscriptToDoc } from "@/lib/google-integration";
 import type { Meeting } from "@/data/meetings";
 
 export interface QueuedFile {
@@ -20,6 +22,9 @@ export interface QueuedFile {
   jobId?: string;
   error?: string;
   progress?: number;
+  uploadProgress?: number; // 0-100
+  uploadedBytes?: number;
+  uploadStartTime?: number; // Date.now() when upload started
 }
 
 export const LANGUAGES = [
@@ -106,6 +111,7 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+
   const updateQueueItem = (id: string, updates: Partial<QueuedFile>) => {
     setQueue((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)));
   };
@@ -142,8 +148,10 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     const interval = setInterval(async () => {
       try {
         const status = await getTranscriptionStatus(jobId);
+        console.info(`[poll] Job ${jobId}: status=${status.status}`);
 
-        if (status.status === "processing") {
+        if (status.status === "uploaded" || status.status === "pending" || status.status === "processing") {
+          // All intermediate states — keep polling
           updateQueueItem(queueId, { status: "transcribing", progress: undefined });
         } else if (status.status === "completed") {
           clearInterval(interval);
@@ -153,10 +161,32 @@ export function UploadProvider({ children }: { children: ReactNode }) {
             const transcript = await getTranscript(jobId);
             const segments = convertSegments(transcript.segments);
             const isVideo = /\.(mp4|mkv|avi|mov|webm)$/i.test(fileName);
-            const meeting: Meeting = {
+            let meetingTitle = fileName.replace(/\.[^.]+$/, "");
+            const parsedDate = parseDateFromFilename(fileName);
+            const meetingDate = parsedDate || new Date().toISOString().slice(0, 10);
+
+            // Google Calendar matching
+            const calMatch = loadSetting("google_cal_match", true);
+            if (calMatch && parsedDate) {
+              try {
+                const event = await matchCalendarEvent(fileName, parsedDate);
+                if (event) {
+                  meetingTitle = event.title;
+                  appendActivity({ type: "google", message: `Matched calendar event: "${meetingTitle}"` });
+                  toast.info(`📅 Matched: ${meetingTitle}`);
+                }
+              } catch (err: any) {
+                console.warn("[google] Calendar match error:", err);
+              }
+            }
+
+            // Update existing meeting entry (created at upload time)
+            const meetings = loadMeetings();
+            const idx = meetings.findIndex((m) => String(m.id) === String(jobId));
+            const updatedMeeting: Meeting = {
               id: jobId,
-              title: fileName.replace(/\.[^.]+$/, ""),
-              date: new Date().toISOString().slice(0, 10),
+              title: meetingTitle,
+              date: meetingDate,
               duration: transcript.duration
                 ? `${Math.floor(transcript.duration / 60)}:${String(Math.floor(transcript.duration % 60)).padStart(2, "0")}`
                 : "0:00",
@@ -166,15 +196,33 @@ export function UploadProvider({ children }: { children: ReactNode }) {
               segments,
             };
 
-            const meetings = loadMeetings();
-            meetings.unshift(meeting);
+            if (idx >= 0) {
+              meetings[idx] = updatedMeeting;
+            } else {
+              meetings.unshift(updatedMeeting);
+            }
             saveMeetings(meetings);
             saveTranscriptSegments(jobId, segments);
             onMeetingsChangedRef.current?.();
 
             updateQueueItem(queueId, { status: "completed" });
-            appendActivity({ type: "transcription", message: `Transcription completed: ${fileName} (${segments.length} segments)` });
-            toast.success(`Transcription complete: ${fileName}`);
+            appendActivity({ type: "transcription", message: `Transcription completed: ${meetingTitle} (${segments.length} segments)` });
+            toast.success(`Transcription complete: ${meetingTitle}`);
+
+            // Google Docs auto-sync
+            const autoSync = loadSetting("google_auto_sync_docs", false);
+            if (autoSync && segments.length > 0) {
+              try {
+                const docResult = await syncTranscriptToDoc(meetingTitle, segments);
+                if (docResult) {
+                  appendActivity({ type: "google", message: `Synced to Google Docs: ${docResult.url}` });
+                  toast.success(`📄 Transcript synced to Google Docs`);
+                }
+              } catch (err: any) {
+                console.warn("[google] Doc sync error:", err);
+                appendActivity({ type: "error", message: `Google Docs sync failed: ${err.message}` });
+              }
+            }
           } catch (err: any) {
             updateQueueItem(queueId, { status: "error", error: err.message });
             appendActivity({ type: "error", message: `Failed to fetch transcript for ${fileName}: ${err.message}` });
@@ -185,14 +233,46 @@ export function UploadProvider({ children }: { children: ReactNode }) {
           updateQueueItem(queueId, { status: "error", error: "Transcription failed" });
           appendActivity({ type: "error", message: `Transcription failed: ${fileName}` });
           toast.error(`Transcription failed: ${fileName}`);
+        } else {
+          // Unknown status — log and keep polling
+          console.warn(`[poll] Job ${jobId}: unknown status "${status.status}", continuing to poll`);
         }
       } catch (err: any) {
-        console.warn(`Poll error for ${jobId}:`, err.message);
+        console.warn(`[poll] Error polling ${jobId}:`, err.message);
       }
     }, 10_000);
 
     pollingRef.current.set(queueId, interval);
   }, []);
+
+  // Recovery: resume polling for any meetings stuck in "transcribing" status after restart
+  const recoveryRanRef = useRef(false);
+  useEffect(() => {
+    if (recoveryRanRef.current) return;
+    recoveryRanRef.current = true;
+
+    const meetings = loadMeetings();
+    const inProgress = meetings.filter((m) => m.status === "transcribing");
+    if (inProgress.length === 0) return;
+
+    console.info(`[recovery] Found ${inProgress.length} transcribing job(s), resuming polling…`);
+    appendActivity({ type: "transcription", message: `Resuming ${inProgress.length} in-progress transcription(s) after restart` });
+
+    for (const meeting of inProgress) {
+      const recoveredItem: QueuedFile = {
+        file: new File([], meeting.title || meeting.id),
+        id: `recovery-${meeting.id}`,
+        language: "auto",
+        status: "transcribing",
+        jobId: meeting.id,
+      };
+      setQueue((prev) => {
+        if (prev.some((f) => f.jobId === meeting.id)) return prev;
+        return [...prev, recoveredItem];
+      });
+      pollJob(`recovery-${meeting.id}`, meeting.id, meeting.title || meeting.id, "auto");
+    }
+  }, [pollJob]);
 
   const startTranscriptionFn = useCallback(async () => {
     const queued = queue.filter((f) => f.status === "queued");
@@ -204,29 +284,72 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     for (const item of queued) {
       const isVideo = /\.(mp4|mkv|avi|mov|webm)$/i.test(item.file.name);
 
-      updateQueueItem(item.id, { status: "uploading" });
+      updateQueueItem(item.id, { status: "uploading", uploadStartTime: Date.now(), uploadProgress: 0, uploadedBytes: 0 });
       appendActivity({ type: "upload", message: `Uploading ${item.file.name} (${formatSize(item.file.size)})` });
 
       try {
+        const onProgress = (loaded: number, total: number) => {
+          updateQueueItem(item.id, {
+            uploadProgress: Math.round((loaded / total) * 100),
+            uploadedBytes: loaded,
+          });
+        };
         const result = isVideo
-          ? await uploadVideo(item.file, item.file.name.replace(/\.[^.]+$/, ""))
-          : await uploadAudio(item.file, item.file.name.replace(/\.[^.]+$/, ""));
+          ? await uploadVideo(item.file, item.file.name.replace(/\.[^.]+$/, ""), onProgress)
+          : await uploadAudio(item.file, item.file.name.replace(/\.[^.]+$/, ""), onProgress);
 
-        const jobId = result.id;
+        const jobId = String(result.id);
         updateQueueItem(item.id, { status: "uploaded", jobId });
         appendActivity({ type: "upload", message: `Uploaded ${item.file.name} → job ${jobId}` });
 
         if (autoTranscribe) {
           try {
-            await startWithOomRetry(jobId, { language: item.language });
+            // Create meeting entry immediately so it appears in the list
+            const isVid = /\.(mp4|mkv|avi|mov|webm)$/i.test(item.file.name);
+            const whisperModel = loadSettingDirect("whisper_model", "large-v3");
+            const whisperDevice = loadSettingDirect("whisper_device", "cuda");
+            const pendingMeeting: Meeting = {
+              id: jobId,
+              title: item.file.name.replace(/\.[^.]+$/, ""),
+              date: new Date().toISOString().slice(0, 10),
+              duration: "0:00",
+              status: "transcribing",
+              source: "Upload",
+              mediaType: isVid ? "video" : "audio",
+              fileSize: item.file.size,
+              transcribeStartTime: Date.now(),
+              whisperModel,
+              whisperDevice,
+              segments: [],
+            };
+            const currentMeetings = loadMeetings();
+            currentMeetings.unshift(pendingMeeting);
+            saveMeetings(currentMeetings);
+            onMeetingsChangedRef.current?.();
+
+            try {
+              await startWithOomRetry(jobId, { language: item.language });
+              appendActivity({ type: "transcription", message: `Transcription started: ${item.file.name}` });
+              toast.info(`Transcription started: ${item.file.name}`);
+            } catch (err: any) {
+              // Scriberr may auto-start transcription on upload — 400 "already processing" is OK
+              const isAlreadyRunning = err.message?.includes("currently processing or pending");
+              if (isAlreadyRunning) {
+                console.info(`[upload] Job ${jobId} already processing, skipping start call`);
+                appendActivity({ type: "transcription", message: `Transcription already running: ${item.file.name}` });
+              } else {
+                updateQueueItem(item.id, { status: "error", error: err.message });
+                appendActivity({ type: "error", message: `Failed to start transcription for ${item.file.name}: ${err.message}` });
+                toast.error(`Failed to start: ${err.message}`);
+                continue; // skip polling for this item
+              }
+            }
             updateQueueItem(item.id, { status: "transcribing" });
-            appendActivity({ type: "transcription", message: `Transcription started: ${item.file.name}` });
-            toast.info(`Transcription started: ${item.file.name}`);
             pollJob(item.id, jobId, item.file.name, item.language);
-          } catch (err: any) {
-            updateQueueItem(item.id, { status: "error", error: err.message });
-            appendActivity({ type: "error", message: `Failed to start transcription for ${item.file.name}: ${err.message}` });
-            toast.error(`Failed to start: ${err.message}`);
+          } catch (startErr: any) {
+            updateQueueItem(item.id, { status: "error", error: startErr.message });
+            appendActivity({ type: "error", message: `Transcription setup failed for ${item.file.name}: ${startErr.message}` });
+            toast.error(`Failed: ${startErr.message}`);
           }
         } else {
           const meeting: Meeting = {

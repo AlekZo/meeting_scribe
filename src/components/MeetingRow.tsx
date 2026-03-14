@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
+import { useState, useEffect } from "react";
 import { cn, meetingSlug } from "@/lib/utils";
-import { Clock, CheckCircle2, Loader2, AlertCircle, ExternalLink, Video, Music, Tag, Layers } from "lucide-react";
+import { Clock, CheckCircle2, Loader2, AlertCircle, ExternalLink, Video, Music, Tag, Layers, Timer, Cpu, Trash2 } from "lucide-react";
 import { MeetingCategory } from "@/data/meetings";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 
 export type MeetingStatus = "pending" | "transcribing" | "completed" | "error";
 
@@ -18,19 +20,37 @@ interface MeetingRowProps {
   tags?: string[];
   meetingType?: string;
   autoCategories?: string[];
+  transcribeStartTime?: number;
+  whisperModel?: string;
+  whisperDevice?: string;
+  onDelete?: (id: string) => void;
 }
 
-const statusConfig: Record<MeetingStatus, { icon: typeof CheckCircle2; label: string; className: string; bgClass: string }> = {
+const statusConfig: Record<MeetingStatus, { icon: typeof CheckCircle2; label: string; className: string; iconClassName?: string; bgClass: string }> = {
   pending: { icon: Clock, label: "Pending", className: "text-warning", bgClass: "bg-warning/10" },
-  transcribing: { icon: Loader2, label: "Transcribing", className: "text-info animate-spin", bgClass: "bg-info/10" },
+  transcribing: { icon: Loader2, label: "Transcribing", className: "text-info", iconClassName: "animate-spin", bgClass: "bg-info/10" },
   completed: { icon: CheckCircle2, label: "Completed", className: "text-success", bgClass: "bg-success/10" },
   error: { icon: AlertCircle, label: "Error", className: "text-destructive", bgClass: "bg-destructive/10" },
 };
 
-export function MeetingRow({ id, title, date, duration, status, source, mediaType, calendarEventUrl, category, tags, meetingType, autoCategories }: MeetingRowProps) {
-  const { icon: StatusIcon, label, className, bgClass } = statusConfig[status];
-
+export function MeetingRow({ id, title, date, duration, status, source, mediaType, calendarEventUrl, category, tags, meetingType, autoCategories, transcribeStartTime, whisperModel, whisperDevice, onDelete }: MeetingRowProps) {
+  const { icon: StatusIcon, label, className, iconClassName, bgClass } = statusConfig[status];
   const hasClassification = !!(category || (tags && tags.length > 0) || (autoCategories && autoCategories.length > 0));
+
+  // Live timer for transcribing status
+  const [elapsed, setElapsed] = useState("");
+  useEffect(() => {
+    if (status !== "transcribing" || !transcribeStartTime) return;
+    const tick = () => {
+      const secs = Math.floor((Date.now() - transcribeStartTime) / 1000);
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      setElapsed(m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`);
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [status, transcribeStartTime]);
 
   return (
     <Link
@@ -121,10 +141,60 @@ export function MeetingRow({ id, title, date, duration, status, source, mediaTyp
         )}
       </div>
 
-      {/* Status — right side */}
-      <div className={cn("flex items-center gap-1.5 shrink-0 rounded-full px-2 py-1 text-[11px] font-medium", className, bgClass)}>
-        <StatusIcon className="h-3 w-3" />
-        <span className="hidden sm:inline">{label}</span>
+      {/* Right side: status + delete */}
+      <div className="flex items-start gap-2 shrink-0">
+        <div className="flex flex-col items-end gap-1">
+          <div className={cn("flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] font-medium", className, bgClass)}>
+            <StatusIcon className={cn("h-3 w-3", iconClassName)} />
+            <span className="hidden sm:inline">{label}</span>
+          </div>
+          {status === "transcribing" && (
+            <div className="flex flex-col items-end gap-0.5">
+              {(whisperModel || whisperDevice) && (
+                <span className="flex items-center gap-1 text-[9px] font-mono text-muted-foreground">
+                  <Cpu className="h-2.5 w-2.5" />
+                  {whisperModel || "large-v3"}{whisperDevice ? ` · ${whisperDevice}` : ""}
+                </span>
+              )}
+              {elapsed && (
+                <span className="flex items-center gap-1 text-[9px] font-mono text-info">
+                  <Timer className="h-2.5 w-2.5" />
+                  {elapsed}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {onDelete && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <button
+                onClick={(e) => e.preventDefault()}
+                className="mt-1 rounded p-1 text-muted-foreground/50 opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+                title="Delete meeting"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete meeting?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will permanently delete "<span className="font-medium">{title}</span>" and its transcript. This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => onDelete(id)}
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
       </div>
     </Link>
   );

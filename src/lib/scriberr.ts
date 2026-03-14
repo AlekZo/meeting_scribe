@@ -10,7 +10,7 @@ function getConfig() {
   // If no custom URL is set, use the nginx proxy path (works in Docker)
   const baseUrl = customUrl
     ? `${protocol}://${customUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`
-    : `${window.location.origin}/scriberr`;
+    : "/scriberr";
   const apiKey = loadSetting<string>("scriberr_api_key", "");
   return { baseUrl, apiKey };
 }
@@ -102,45 +102,94 @@ export interface ScriberrTranscript {
   }>;
 }
 
+/** Upload progress callback */
+export type UploadProgressCallback = (loaded: number, total: number) => void;
+
+/** Upload a file via XHR with progress tracking */
+function uploadWithProgress(
+  url: string,
+  formData: FormData,
+  apiKey: string,
+  onProgress?: UploadProgressCallback
+): Promise<ScriberrUploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+
+    // Set auth headers
+    const authMethod = loadSetting<string>("scriberr_auth_method", "x-api-key");
+    if (apiKey) {
+      if (authMethod === "bearer") {
+        xhr.setRequestHeader("Authorization", `Bearer ${apiKey}`);
+      } else {
+        xhr.setRequestHeader("X-API-Key", apiKey);
+      }
+    }
+
+    if (onProgress) {
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) {
+          onProgress(e.loaded, e.total);
+        }
+      });
+    }
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Invalid JSON response"));
+        }
+      } else {
+        reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload aborted")));
+
+    xhr.send(formData);
+  });
+}
+
 /** Upload an audio file to Scriberr */
 export async function uploadAudio(
   file: File,
-  title: string
+  title: string,
+  onProgress?: UploadProgressCallback
 ): Promise<ScriberrUploadResult> {
   const { baseUrl, apiKey } = getConfig();
   const formData = new FormData();
   formData.append("audio", file, file.name);
   formData.append("title", title);
-  // Python script explicitly sets diarization here for /submit
   formData.append("diarization", "true");
 
-  // Changed from /upload to /submit to match Python script
-  const res = await fetch(`${baseUrl}/api/v1/transcription/submit`, {
-    method: "POST",
-    headers: headers(apiKey),
-    body: formData,
-  });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  return uploadWithProgress(
+    `${baseUrl}/api/v1/transcription/submit`,
+    formData,
+    apiKey,
+    onProgress
+  );
 }
 
 /** Upload a video file to Scriberr */
 export async function uploadVideo(
   file: File,
-  title: string
+  title: string,
+  onProgress?: UploadProgressCallback
 ): Promise<ScriberrUploadResult> {
   const { baseUrl, apiKey } = getConfig();
   const formData = new FormData();
   formData.append("video", file, file.name);
   formData.append("title", title);
 
-  const res = await fetch(`${baseUrl}/api/v1/transcription/upload-video`, {
-    method: "POST",
-    headers: headers(apiKey),
-    body: formData,
-  });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`);
-  return res.json();
+  return uploadWithProgress(
+    `${baseUrl}/api/v1/transcription/upload-video`,
+    formData,
+    apiKey,
+    onProgress
+  );
 }
 
 /** Start transcription for a job */

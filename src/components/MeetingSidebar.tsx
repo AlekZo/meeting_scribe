@@ -58,7 +58,7 @@ export function MeetingSidebar({
 
   const recentIds = getRecentMeetings().filter((id) => id !== currentMeetingId);
   const recentMeetings = recentIds
-    .map((id) => allMeetings.find((m) => m.id === id))
+    .map((id) => allMeetings.find((m) => String(m.id) === String(id)))
     .filter(Boolean) as Meeting[];
 
   const otherMeetings = allMeetings.filter((m) => m.id !== currentMeetingId);

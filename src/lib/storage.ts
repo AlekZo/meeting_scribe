@@ -182,6 +182,20 @@ export function saveMeetings(meetings: Meeting[]): void {
   saveSetting("meetings", meetings);
 }
 
+export function deleteMeeting(meetingId: string): void {
+  const meetings = loadMeetings().filter((m) => m.id !== meetingId);
+  saveMeetings(meetings);
+  // Clean up related data
+  try {
+    const txKey = STORAGE_PREFIX + `transcript_${meetingId}`;
+    localStorage.removeItem(txKey);
+    localStorage.removeItem(`${txKey}__ts`);
+    const ovKey = STORAGE_PREFIX + `meeting_override_${meetingId}`;
+    localStorage.removeItem(ovKey);
+    localStorage.removeItem(`${ovKey}__ts`);
+  } catch {}
+}
+
 export function loadTranscriptSegments(meetingId: string): TranscriptSegment[] | null {
   // Try new per-meeting key first, fall back to legacy shared key
   const perKey = loadSetting<TranscriptSegment[] | null>(`transcript_${meetingId}`, null);

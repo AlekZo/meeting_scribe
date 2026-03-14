@@ -1,13 +1,14 @@
+import { toast } from "sonner";
 import { MeetingRow } from "@/components/MeetingRow";
 import { MEETING_CATEGORIES, MeetingCategory, TagRule } from "@/data/meetings";
-import { loadMeetings, loadMeetingOverrides, loadSetting, saveSetting } from "@/lib/storage";
+import { loadMeetings, loadMeetingOverrides, loadSetting, saveSetting, deleteMeeting } from "@/lib/storage";
 import { autoTag } from "@/lib/auto-tagger";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, X, Tag, CalendarIcon, ChevronDown, FileSearch, Upload, FileVideo, FileAudio, Globe, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { Search, X, Tag, CalendarIcon, ChevronDown, FileSearch, Upload, FileVideo, FileAudio, Globe, Loader2, CheckCircle2, AlertCircle, Clock, ArrowUpFromLine } from "lucide-react";
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { format, parseISO, isSameDay } from "date-fns";
@@ -26,10 +27,19 @@ export default function MeetingsPage() {
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
   const [showUploadZone, setShowUploadZone] = useState(true);
   const [dragOver, setDragOver] = useState(false);
+  const [, setTick] = useState(0);
 
   // Upload context
   const upload = useUpload();
   const { queue, isProcessing, addFiles, removeFile, setLanguage, startTranscription, activeCount, queuedCount } = upload;
+
+  // Tick every second to update elapsed time during uploads
+  useEffect(() => {
+    const hasActive = queue.some((f) => f.status === "uploading" || f.status === "transcribing");
+    if (!hasActive) return;
+    const timer = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, [queue]);
 
   // Meetings data — refresh when uploads complete
   const [meetingsVersion, setMeetingsVersion] = useState(0);
@@ -114,6 +124,12 @@ export default function MeetingsPage() {
 
   const hasActiveFilters = search || activeCategory !== "all" || activeStatus !== "all" || selectedDate;
 
+  const handleDeleteMeeting = useCallback((meetingId: string) => {
+    deleteMeeting(meetingId);
+    setMeetingsVersion((v) => v + 1);
+    toast.success("Meeting deleted");
+  }, []);
+
   // Count meetings per category
   const categoryCounts = new Map<string, number>();
   categoryCounts.set("all", meetingsWithOverrides.length);
@@ -155,13 +171,33 @@ export default function MeetingsPage() {
 
   const statusLabel = (item: typeof queue[0]) => {
     switch (item.status) {
-      case "uploading": return "Uploading…";
+      case "uploading": {
+        const pct = item.uploadProgress ?? 0;
+        return `Uploading ${pct}%`;
+      }
       case "uploaded": return "Uploaded";
       case "transcribing": return item.progress ? `Transcribing ${item.progress}%` : "Transcribing…";
       case "completed": return "Done";
       case "error": return item.error || "Error";
       default: return "";
     }
+  };
+
+  const formatElapsed = (startTime?: number) => {
+    if (!startTime) return "";
+    const seconds = Math.floor((Date.now() - startTime) / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return m > 0 ? `${m}m ${s}s` : `${s}s`;
+  };
+
+  const formatSpeed = (item: typeof queue[0]) => {
+    if (!item.uploadStartTime || !item.uploadedBytes) return "";
+    const elapsed = (Date.now() - item.uploadStartTime) / 1000;
+    if (elapsed < 0.5) return "";
+    const speed = item.uploadedBytes / elapsed;
+    if (speed > 1024 * 1024) return `${(speed / (1024 * 1024)).toFixed(1)} MB/s`;
+    return `${(speed / 1024).toFixed(0)} KB/s`;
   };
 
   // Shared calendar component
@@ -281,11 +317,13 @@ export default function MeetingsPage() {
               </div>
               {queue.map((item) => {
                 const isVideo = /\.(mp4|mkv|avi|mov|webm)$/i.test(item.file.name);
+                const isUploading = item.status === "uploading";
+                const isActive = isUploading || item.status === "transcribing";
                 return (
                   <div
                     key={item.id}
                     className={cn(
-                      "flex items-center justify-between rounded-lg border px-3 py-2 transition-colors",
+                      "rounded-lg border px-3 py-2 transition-colors",
                       item.status === "error"
                         ? "border-destructive/30 bg-destructive/5"
                         : item.status === "completed"
@@ -293,63 +331,92 @@ export default function MeetingsPage() {
                           : "border-border bg-card"
                     )}
                   >
-                    <div className="flex items-center gap-2.5">
-                      {statusIcon(item.status) || (isVideo ? (
-                        <FileVideo className="h-3.5 w-3.5 text-info" />
-                      ) : (
-                        <FileAudio className="h-3.5 w-3.5 text-primary" />
-                      ))}
-                      <div>
-                        <p className="text-xs font-medium text-card-foreground">{item.file.name}</p>
-                        <div className="flex items-center gap-2">
-                          <p className="text-[10px] text-muted-foreground font-mono">{formatSize(item.file.size)}</p>
-                          {item.status !== "queued" && (
-                            <span className={cn(
-                              "text-[10px] font-mono",
-                              item.status === "error" ? "text-destructive" :
-                              item.status === "completed" ? "text-success" :
-                              "text-primary"
-                            )}>
-                              {statusLabel(item)}
-                            </span>
-                          )}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        {statusIcon(item.status) || (isVideo ? (
+                          <FileVideo className="h-3.5 w-3.5 text-info shrink-0" />
+                        ) : (
+                          <FileAudio className="h-3.5 w-3.5 text-primary shrink-0" />
+                        ))}
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-card-foreground truncate">{item.file.name}</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-[10px] text-muted-foreground font-mono">{formatSize(item.file.size)}</p>
+                            {item.status !== "queued" && (
+                              <span className={cn(
+                                "text-[10px] font-mono",
+                                item.status === "error" ? "text-destructive" :
+                                item.status === "completed" ? "text-success" :
+                                "text-primary"
+                              )}>
+                                {statusLabel(item)}
+                              </span>
+                            )}
+                            {isActive && item.uploadStartTime && (
+                              <>
+                                <span className="text-[10px] text-muted-foreground font-mono flex items-center gap-0.5">
+                                  <Clock className="h-2.5 w-2.5" />
+                                  {formatElapsed(item.uploadStartTime)}
+                                </span>
+                                {isUploading && formatSpeed(item) && (
+                                  <span className="text-[10px] text-muted-foreground font-mono flex items-center gap-0.5">
+                                    <ArrowUpFromLine className="h-2.5 w-2.5" />
+                                    {formatSpeed(item)}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {item.status === "queued" && (
-                        <div className="flex items-center gap-1">
-                          <Globe className="h-3 w-3 text-muted-foreground" />
-                          <select
-                            value={item.language}
-                            onChange={(e) => setLanguage(item.id, e.target.value)}
-                            className="h-6 rounded border border-border bg-background px-1.5 text-[10px] font-mono text-foreground focus:ring-1 focus:ring-ring outline-none"
+                      <div className="flex items-center gap-2 shrink-0">
+                        {item.status === "queued" && (
+                          <div className="flex items-center gap-1">
+                            <Globe className="h-3 w-3 text-muted-foreground" />
+                            <select
+                              value={item.language}
+                              onChange={(e) => setLanguage(item.id, e.target.value)}
+                              className="h-6 rounded border border-border bg-background px-1.5 text-[10px] font-mono text-foreground focus:ring-1 focus:ring-ring outline-none"
+                            >
+                              {LANGUAGES.map((lang) => (
+                                <option key={lang.code} value={lang.code}>
+                                  {lang.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        {item.jobId && item.status === "completed" && (
+                          <a
+                            href={getAudioUrl(item.jobId)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[10px] text-primary hover:underline font-mono"
                           >
-                            {LANGUAGES.map((lang) => (
-                              <option key={lang.code} value={lang.code}>
-                                {lang.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {item.jobId && item.status === "completed" && (
-                        <a
-                          href={getAudioUrl(item.jobId)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[10px] text-primary hover:underline font-mono"
+                            Scriberr
+                          </a>
+                        )}
+                        <button
+                          onClick={() => removeFile(item.id)}
+                          className="text-muted-foreground hover:text-destructive"
                         >
-                          Scriberr
-                        </a>
-                      )}
-                      <button
-                        onClick={() => removeFile(item.id)}
-                        className="text-muted-foreground hover:text-destructive"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
+                    {isUploading && (
+                      <div className="mt-1.5 flex items-center gap-2">
+                        <div className="flex-1 h-1.5 rounded-full bg-secondary overflow-hidden">
+                          <div
+                            className="h-full bg-primary rounded-full transition-all duration-300"
+                            style={{ width: `${item.uploadProgress ?? 0}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] font-mono text-muted-foreground w-8 text-right">
+                          {item.uploadProgress ?? 0}%
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -523,6 +590,10 @@ export default function MeetingsPage() {
             tags={m.tags}
             meetingType={m.meetingType}
             autoCategories={m.autoCategories}
+            transcribeStartTime={m.transcribeStartTime}
+            whisperModel={m.whisperModel}
+            whisperDevice={m.whisperDevice}
+            onDelete={handleDeleteMeeting}
           />
         ))}
         {filtered.length === 0 && (

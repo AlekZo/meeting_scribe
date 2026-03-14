@@ -2,6 +2,7 @@ import { useParams, useNavigate, NavLink } from "react-router-dom";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { MeetingCategory, ActionItem, TagRule } from "@/data/meetings";
 import { loadMeetings, loadMeetingOverrides, saveMeetingOverride, loadTranscriptSegments, loadSetting } from "@/lib/storage";
+import { getAudioUrl } from "@/lib/scriberr";
 import { autoTag } from "@/lib/auto-tagger";
 import { meetingIdFromSlug, meetingSlug, cn } from "@/lib/utils";
 import { callOpenRouter, callOpenRouterStreaming, trackMeetingUsage, getOpenRouterKey, getMeetingUsage, AIUsage, MissingApiKeyError, estimateCallCost, COST_WARNING_THRESHOLD } from "@/lib/openrouter";
@@ -170,10 +171,12 @@ export default function MeetingDetailPage() {
 
   const meeting = useMemo(() => {
     if (!slugParam) return undefined;
-    const direct = allMeetings.find((m) => m.id === slugParam);
+    // Direct match (exact slug = id)
+    const direct = allMeetings.find((m) => String(m.id) === slugParam);
     if (direct) return direct;
+    // Extract id from slug and match (use loose string comparison for numeric IDs)
     const extractedId = meetingIdFromSlug(slugParam);
-    return allMeetings.find((m) => m.id === extractedId);
+    return allMeetings.find((m) => String(m.id) === extractedId);
   }, [allMeetings, slugParam]);
   const id = meeting?.id;
   const otherMeetings = allMeetings.filter((m) => m.id !== id);
@@ -295,7 +298,7 @@ export default function MeetingDetailPage() {
     const ov = id ? loadMeetingOverrides(id) : {};
     const stored = id ? loadTranscriptSegments(id) : null;
     const allM = loadMeetings();
-    const m = allM.find((m) => m.id === id);
+    const m = allM.find((m) => String(m.id) === String(id));
     setSegments(ov.segments ?? stored ?? m?.segments ?? []);
     setFormData({
       title: ov.title ?? m?.title ?? "",
@@ -914,6 +917,7 @@ export default function MeetingDetailPage() {
         <MeetingPlayer
           title={formData.title}
           date={formData.date}
+          mediaSrc={meeting.mediaSrc || getAudioUrl(meeting.id)}
           mediaType={meeting.mediaType}
           segments={safeSegments}
           onSpeakerRename={handleSpeakerRename}

@@ -5,7 +5,10 @@ services:
     ports:
       - "7899:7899"
     depends_on:
-      - api
+      api:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - meetscribe-net
       - scriberr-net
