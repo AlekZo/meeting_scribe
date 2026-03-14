@@ -1,0 +1,41 @@
+services:
+  meetscribe:
+    image: meeting-scribe-web
+    build: .
+    ports:
+      - "7899:7899"
+    depends_on:
+      api:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - meetscribe-net
+      - scriberr-net
+    restart: unless-stopped
+
+  api:
+    image: meeting-scribe-api
+    build: ./server
+    ports:
+      - "3001:3001"
+    volumes:
+      - meetscribe_data:/data
+    environment:
+      - DATA_DIR=/data
+      - PORT=3001
+    networks:
+      - meetscribe-net
+    restart: unless-stopped
+
+networks:
+  meetscribe-net:
+    name: meetscribe-net
+    driver: bridge
+  scriberr-net:
+    external: true
+    name: scriberr-net
+
+volumes:
+  meetscribe_data:
+    driver: local

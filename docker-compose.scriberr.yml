@@ -1,0 +1,46 @@
+# Scriberr stack — shares 'scriberr-net' with meetscribe
+# Create the network first:  docker network create scriberr-net
+# Then:  docker compose -f docker-compose.scriberr.yml up -d
+
+services:
+  scriberr:
+    image: ghcr.io/rishikanthc/scriberr-cuda-blackwell:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - scriberr_data:/app/data
+      - env_data:/app/whisperx-env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - APP_ENV=production
+      - SECURE_COOKIES=false
+      - HF_TOKEN=${HF_TOKEN}
+    networks:
+      - scriberr-net
+
+networks:
+  scriberr-net:
+    external: true
+    name: scriberr-net
+
+volumes:
+  scriberr_data: {}
+  env_data: {}
