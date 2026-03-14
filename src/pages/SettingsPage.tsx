@@ -653,12 +653,17 @@ export default function SettingsPage() {
                       fd.append("sa", file);
                       try {
                         const res = await fetch("/api/google/service-account", { method: "POST", body: fd });
+                        const contentType = res.headers.get("content-type") || "";
+                        if (!contentType.includes("application/json")) {
+                          toast.error("Server unavailable — make sure the backend is running (Docker)");
+                          return;
+                        }
                         const data = await res.json();
                         if (res.ok) {
                           setGoogleSaEmail(data.email);
                           toast.success(`Service account configured: ${data.email}`);
                         } else {
-                          toast.error(data.error);
+                          toast.error(data.error || "Upload failed");
                         }
                       } catch (err: any) {
                         toast.error(`Upload failed: ${err.message}`);
